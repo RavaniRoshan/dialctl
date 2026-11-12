@@ -130,7 +130,7 @@ kbd { background: #22303d; border: 1px solid var(--border); border-bottom-width:
             <th data-key="complaints" tabindex="0">Unique complaints (0/3) <span class="sort-ind" id="s-complaints"></span></th>
             <th data-key="risk" tabindex="0">Risk score <span class="sort-ind" id="s-risk"></span></th>
             <th data-key="quarantine" tabindex="0">Quarantine <span class="sort-ind" id="s-quarantine"></span></th>
-            <th data-key="exposure" tabindex="0">Exposure (₹) <span class="sort-ind" id="s-exposure"></span></th>
+            <th data-key="exposure" tabindex="0">Exposure <span class="sort-ind" id="s-exposure"></span></th>
           </tr>
         </thead>
         <tbody id="tbody"></tbody>
@@ -338,6 +338,18 @@ kbd { background: #22303d; border: 1px solid var(--border); border-bottom-width:
   function istSecOfDay(epochSec) {
     return ((Number(epochSec) + 19800) % 86400 + 86400) % 86400;
   }
+  // Indian digit grouping (lakh/crore) and ₹ formatting, so figures read the
+  // way Indian operators expect: ₹1,00,000 rather than ₹100,000.
+  const inrFormatter = new Intl.NumberFormat('en-IN', {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
+  function formatInr(amount) {
+    return '₹' + inrFormatter.format(Number(amount) || 0);
+  }
+  function formatNumberEnIn(value) {
+    return new Intl.NumberFormat('en-IN').format(Number(value) || 0);
+  }
 
   // --- Aggregation / scan ---
   function scanAndAggregate(dltRows, consentRows, cdrRows) {
@@ -534,7 +546,7 @@ kbd { background: #22303d; border: 1px solid var(--border); border-bottom-width:
         '<td><span class="progress" aria-label="complaint progress"><span style="width:' + pct + '%"></span></span>' + esc(r.complaintProgress) + mlBadge + '</td>' +
         '<td>' + r.risk.toFixed(2) + '</td>' +
         '<td>' + (r.quarantined ? '<span class="badge q">QUARANTINE</span>' : '<span class="badge ok">CLEAR</span>') + '</td>' +
-        '<td>' + r.exposure.toFixed(2) + '</td>';
+        '<td>' + formatInr(r.exposure) + '</td>';
       tr.addEventListener('click', () => { selectedIndex = i; renderTable(); savePrefs(); if (drawer.classList.contains('open')) updateEvidenceDrawer(); });
       tbody.appendChild(tr);
     }
