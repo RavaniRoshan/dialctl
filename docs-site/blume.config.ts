@@ -1,4 +1,5 @@
 import { defineConfig } from "blume";
+import { node } from "blume/deploy";
 
 export default defineConfig({
   title: "dialctl",
@@ -20,7 +21,11 @@ export default defineConfig({
     robots: true,
   },
 
-  deployment: {
+  // A node server build rather than a static one: the deploy target is a
+  // container that serves dist/ itself, and only the server can set the
+  // security headers on every response. A static _headers file is ignored
+  // there (verified against the live host).
+  deployment: node({
     site: "https://dialctl-docs.antideploy.app",
-  },
+  }),
 });

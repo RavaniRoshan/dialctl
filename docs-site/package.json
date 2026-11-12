@@ -3,13 +3,24 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "blume dev",
-    "build": "blume build",
-    "preview": "blume preview",
+    "dev": "astro dev",
+    "build": "astro build",
+    "preview": "astro preview",
     "doctor": "blume doctor",
-    "validate": "blume validate"
+    "validate": "blume validate",
+    "start": "HOST=0.0.0.0 PORT=${PORT:-8080} node dist/server/entry.mjs"
   },
   "dependencies": {
-    "blume": "^2.2.7"
+    "@astrojs/mdx": "^8.0.2",
+    "@astrojs/node": "^11.1.9",
+    "@orama/orama": "^3.1.18",
+    "@tailwindcss/typography": "^0.5.20",
+    "@tailwindcss/vite": "^4.3.3",
+    "astro": "^7.3.2",
+    "blume": "^2.2.7",
+    "tailwindcss": "^4.3.3"
+  },
+  "engines": {
+    "node": ">=22.19"
   }
 }
