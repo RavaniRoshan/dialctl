@@ -233,24 +233,29 @@ kbd { background: #22303d; border: 1px solid var(--border); border-bottom-width:
       req.onerror = () => reject(req.error);
     });
   }
-  function idbClear() {
-    return new Promise((resolve, reject) => {
-      const tx = db.transaction(DB_STORE, 'readwrite');
-      tx.objectStore(DB_STORE).clear();
-      tx.oncomplete = () => resolve();
-      tx.onerror = () => reject(tx.error);
-    });
-  }
   // Full local wipe: drop the IndexedDB database entirely, then clear prefs.
+  // The open connection must be closed first, otherwise deleteDatabase is
+  // blocked and the UI would report success without wiping.
   function clearLocalAuditData() {
     return new Promise((resolve, reject) => {
-      const req = indexedDB.deleteDatabase(DB_NAME);
-      req.onsuccess = () => {
-        localStorage.removeItem(PREFS_KEY);
-        resolve();
+      const finish = () => {
+        const req = indexedDB.deleteDatabase(DB_NAME);
+        req.onsuccess = () => {
+          localStorage.removeItem(PREFS_KEY);
+          resolve({ ok: true, blocked: false });
+        };
+        req.onerror = () => reject(req.error);
+        req.onblocked = () => resolve({ ok: false, blocked: true });
       };
-      req.onerror = () => reject(req.error);
-      req.onblocked = () => resolve();
+      if (db) {
+        try {
+          db.close();
+        } catch (e) {
+          /* ignore close error and still attempt delete */
+        }
+        db = null;
+      }
+      finish();
     });
   }
 
@@ -844,8 +849,16 @@ kbd { background: #22303d; border: 1px solid var(--border); border-bottom-width:
   document.getElementById('exportJsonlBtn').addEventListener('click', exportJsonl);
   document.getElementById('clearBtn').addEventListener('click', async () => {
     rows = []; filteredIndices = []; selectedIndex = -1;
-    db = null;
-    await clearLocalAuditData();
+    const result = await clearLocalAuditData();
+    if (result && result.blocked) {
+      loadStatus.textContent = 'Could not wipe IndexedDB: another tab has it open. Close other tabs and retry.';
+      return;
+    }
+    try {
+      db = await openDb();
+    } catch (e) {
+      db = null;
+    }
     renderTable();
     openDrawer(false);
     loadStatus.textContent = 'Cleared all local audit data (IndexedDB dropped + prefs removed).';

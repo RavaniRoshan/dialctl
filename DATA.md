@@ -83,7 +83,9 @@ Python 3.12 standard-library `sqlite3` module.
 
 ### 3.4 `cli_registry` — 7 columns
 
-CLI-registry view used by `select_healthy_clis` / healthy routing (SPEC §5.3).
+Legacy registry table. It is still created by `init_db` for backward
+compatibility, but `select_healthy_clis` (SPEC §5.3) now derives health from
+`dlt_declarations` + `cdr_events` and no longer reads this table.
 
 | # | Column | Type | Notes |
 |---|--------|------|-------|

@@ -44,8 +44,10 @@ The declared `series` must match the call intent:
 
 ### R3_ROBO_DND_MODE
 
-Block when the recipient is on an active DND/robo marker. A consent row with
-`consent_flag = 0` and no DND/withdrawal marker does **not** trip this rule.
+Block when the recipient has **no consent row**, when the consent row has
+`dnd_robo_block = 1` (robo-call DND block enabled), or when `revoked_ts` is
+non-null (consent revoked). A consent row with `dnd_robo_block = 0` and no
+revocation does **not** trip this rule.
 
 ### R4_7DAY_INQUIRY
 
@@ -167,16 +169,20 @@ Pinned values:
 
 ### 5.3 Healthy CLI routing filter
 
-`select_healthy_clis(conn, now_ts)` returns only CLIs satisfying **all** of:
+`select_healthy_clis(conn, now_ts)` derives health from `dlt_declarations` and
+`cdr_events` (not `cli_registry`). A CLI is healthy when **all** hold:
 
-```sql
-WHERE status = 'ACTIVE'
-  AND a2p_voice_declared = 1
-  AND compliant_attestation_count > 0
-  AND undeclared_call_count_10d = 0
-  AND unique_complaints_10d < 2
-  AND operator_ml_flags_10d = 0
-```
+- It has a declaration with `valid_from_ts <= now_ts AND valid_to_ts >= now_ts`
+  and `status = 1` (or `dlt_status = 'ACTIVE'`).
+- Over `cdr_events` with `call_ts BETWEEN (now_ts - 864000) AND now_ts`: at
+  most 1 unique complainant (`COUNT(DISTINCT complainant_hmac) < 2`) and no
+  operator ML flag (`COALESCE(SUM(operator_ml_flag), 0) = 0`).
+- It has no undeclared calls in the same 10-day window.
+
+`now_ts = None` defaults to `int(time.time())`. The returned dicts carry
+`cli_e164`, `declaration_id`, `valid_from`, `valid_to`,
+`unique_complaints_10d`, `operator_ml_flags_10d`, and
+`undeclared_call_count_10d`.
 
 ---
 
