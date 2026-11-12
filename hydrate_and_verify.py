@@ -272,14 +272,12 @@ def evaluate_pre_dial(
         (recipient_hmac,),
     ).fetchall()
 
-    # R3_ROBO_DND_MODE: block only on explicit DND/robo/withdrawal marker
-    r3_trip = False
-    for c in consent_rows:
-        _cid, _consent_flag, withdrawal_ts, _ivt, _artifact, revoked_ts = c
-        if withdrawal_ts is not None or revoked_ts is not None:
-            r3_trip = True
-            break
-    if r3_trip:
+    # R3_ROBO_DND_MODE: block when consent is absent, the recipient enabled the
+    # robo-call DND block, or consent was revoked.
+    # consent_row = (consent_id, dnd_robo_block, withdrawal_ts, inquiry_verified_ts,
+    #                inquiry_artifact_sha256, revoked_ts)
+    consent_row = consent_rows[0] if consent_rows else None
+    if not consent_row or consent_row[1] == 1 or consent_row[5] is not None:
         failed_rules.append("R3_ROBO_DND_MODE")
 
     # R4_7DAY_INQUIRY and consent/inquiry fields
@@ -404,21 +402,75 @@ def compute_termination_exposure_inr(durations_sec) -> float:
 
 
 def select_healthy_clis(conn: sqlite3.Connection, now_ts) -> list[dict]:
-    cur = conn.execute(
+    if now_ts is None:
+        now_ts = int(time.time())
+
+    decl_rows = conn.execute(
         """
-        SELECT cli_e164, status, a2p_voice_declared, compliant_attestation_count,
-               undeclared_call_count_10d, unique_complaints_10d, operator_ml_flags_10d
-        FROM cli_registry
-        WHERE status = 'ACTIVE'
-          AND a2p_voice_declared = 1
-          AND compliant_attestation_count > 0
-          AND undeclared_call_count_10d = 0
-          AND unique_complaints_10d < 2
-          AND operator_ml_flags_10d = 0
-        """
-    )
-    cols = [d[0] for d in cur.description]
-    return [dict(zip(cols, row)) for row in cur.fetchall()]
+        SELECT cli_e164, declaration_id, status, dlt_status, valid_from, valid_to
+        FROM dlt_declarations
+        WHERE valid_from <= ? AND valid_to >= ?
+        """,
+        (now_ts, now_ts),
+    ).fetchall()
+
+    healthy: list[dict] = []
+    for cli_e164, declaration_id, status, dlt_status, valid_from, valid_to in decl_rows:
+        active = (status == 1) or (dlt_status == "ACTIVE")
+        if not active:
+            continue
+
+        complaint_row = conn.execute(
+            """
+            SELECT COUNT(DISTINCT complainant_hmac), COALESCE(SUM(operator_ml_flag), 0)
+            FROM cdr_events
+            WHERE cli_e164 = ?
+              AND complaint_flag = 1
+              AND call_ts BETWEEN ? AND ?
+            """,
+            (cli_e164, now_ts - TEN_DAYS_SEC, now_ts),
+        ).fetchone()
+        unique_complaints = complaint_row[0] if complaint_row else 0
+        ml_flags = complaint_row[1] if complaint_row else 0
+
+        if unique_complaints >= 2 or ml_flags >= 1:
+            continue
+
+        undeclared = conn.execute(
+            """
+            SELECT COUNT(*)
+            FROM cdr_events
+            WHERE cli_e164 = ?
+              AND call_ts BETWEEN ? AND ?
+              AND complaint_flag = 0
+              AND call_intent IN ('PROMOTIONAL', 'SERVICE', 'TRANSACTIONAL', 'INQUIRY_FOLLOWUP')
+              AND NOT EXISTS (
+                  SELECT 1 FROM dlt_declarations d
+                  WHERE d.cli_e164 = cdr_events.cli_e164
+                    AND (d.status = 1 OR d.dlt_status = 'ACTIVE')
+                    AND d.valid_from <= cdr_events.call_ts
+                    AND d.valid_to >= cdr_events.call_ts
+              )
+            """,
+            (cli_e164, now_ts - TEN_DAYS_SEC, now_ts),
+        ).fetchone()[0]
+
+        if undeclared > 0:
+            continue
+
+        healthy.append(
+            {
+                "cli_e164": cli_e164,
+                "declaration_id": declaration_id,
+                "valid_from": valid_from,
+                "valid_to": valid_to,
+                "unique_complaints_10d": unique_complaints,
+                "operator_ml_flags_10d": ml_flags,
+                "undeclared_call_count_10d": undeclared,
+            }
+        )
+
+    return healthy
 
 
 def run_smoke_test(limit, out_path) -> dict:

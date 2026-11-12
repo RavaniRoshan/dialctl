@@ -34,6 +34,18 @@ class TestPreDialRules(unittest.TestCase):
         self.assertIn("R4_7DAY_INQUIRY", block_rec["failed_rules"])
         self.assertIn("R5_CALL_WINDOW", block_rec["failed_rules"])
 
+    def test_r3_blocks_when_dnd_robo_block_is_enabled(self) -> None:
+        r_dnd = hmac_phone("+919876500001", "secret")
+        self.conn.execute(
+            "INSERT INTO consent_ledger VALUES (?, ?, ?, ?, ?, ?, ?)",
+            ("CNS-DND", r_dnd, 1, None, 1762356600, "artifact_sha256_ok", None),
+        )
+        rec = evaluate_pre_dial(
+            self.conn, "c_dnd", "+911600412900", r_dnd, "INQUIRY_FOLLOWUP", 1762961400, 1, GENESIS_HASH
+        )
+        self.assertEqual(rec["decision"], "BLOCK")
+        self.assertIn("R3_ROBO_DND_MODE", rec["failed_rules"])
+
     def test_r6_deduplicates_repeat_complainant_hmac(self) -> None:
         # Same complainant files 3 complaints in 10 days -> distinct count is 1 -> ALLOW
         for i in range(3):
