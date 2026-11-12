@@ -393,14 +393,16 @@ kbd { background: #22303d; border: 1px solid var(--border); border-bottom-width:
       } else if (intent === 'SERVICE' || intent === 'TRANSACTIONAL' || intent === 'INQUIRY_FOLLOWUP') {
         if (!series.startsWith('160') && !cli.startsWith('+91160')) failed.push('R2_140_160_SERIES');
       }
-      // R3_ROBO_DND_MODE
+      // R3_ROBO_DND_MODE: mirror server evaluate_pre_dial — block when consent
+      // is missing, dnd_robo_block == 1, or consent was withdrawn/revoked.
       const consentKey = ev.recipient_hmac || ev.recipient_phone || '';
       const consent = consentKey ? consentByHmac.get(consentKey) : null;
-      if (consent && Number(consent.consent_flag) === 0 && (consent.dnd_flag || consent.robo_flag || consent.withdrawal_ts)) {
-        // explicit DND/robo marker -> trip R3
-        if (String(consent.dnd_flag) === '1' || String(consent.robo_flag) === '1') {
-          failed.push('R3_ROBO_DND_MODE');
-        }
+      const hasValue = (v) => v !== undefined && v !== null && String(v).trim() !== '';
+      if (!consent
+          || Number(consent.dnd_robo_block) === 1
+          || hasValue(consent.revoked_ts)
+          || hasValue(consent.withdrawal_ts)) {
+        failed.push('R3_ROBO_DND_MODE');
       }
       // R4_7DAY_INQUIRY
       if (intent === 'INQUIRY_FOLLOWUP') {

@@ -1,8 +1,40 @@
+import json
 import re
+import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 
 HTML = Path(__file__).resolve().parent.parent / "web" / "index.html"
+
+
+def _run_node(script: str) -> str:
+    with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False, encoding="utf-8") as fh:
+        fh.write(script)
+        path = fh.name
+    try:
+        proc = subprocess.run(["node", path], capture_output=True, text=True, timeout=30)
+    finally:
+        Path(path).unlink(missing_ok=True)
+    if proc.returncode != 0:
+        raise AssertionError(f"node error: {proc.stderr.strip()}")
+    return proc.stdout
+
+
+def _extract_function(text: str, name: str) -> str:
+    lines = text.splitlines()
+    start = next(
+        (i for i, l in enumerate(lines) if l.strip().startswith(f"function {name}")),
+        None,
+    )
+    if start is None:
+        raise AssertionError(f"function {name} not found")
+    depth = 0
+    for i in range(start, len(lines)):
+        depth += lines[i].count("{") - lines[i].count("}")
+        if depth == 0 and i > start:
+            return "\n".join(lines[start : i + 1])
+    raise AssertionError(f"function {name} not fully brace-matched")
 
 
 class TestClearDataFlow(unittest.TestCase):
@@ -37,6 +69,83 @@ class TestClearDataFlow(unittest.TestCase):
             if depth == 0 and i > start:
                 return "\n".join(lines[start : i + 1])
         raise AssertionError(f"function {name} not fully brace-matched")
+
+
+class TestBrowserScanR3(unittest.TestCase):
+    """scanAndAggregate must mirror server evaluate_pre_dial R3 semantics."""
+
+    def setUp(self):
+        self.text = HTML.read_text(encoding="utf-8")
+        consts = [
+            "const R4_WINDOW_SEC = 604800;",
+            "const R6_WINDOW_SEC = 864000;",
+            "const RULES = {R1_CLI_DECLARED:'',R2_140_160_SERIES:'',R3_ROBO_DND_MODE:'',R4_7DAY_INQUIRY:'',R5_CALL_WINDOW:'',R6_10DAY_CLUSTER:''};",
+            "const RULE_IDS = Object.keys(RULES);",
+        ]
+        helpers = [
+            "istSecOfDay",
+            "computeRiskScore",
+            "terminationExposureInr",
+            "sortKeysDeep",
+        ]
+        self.fn = "\n".join(consts)
+        self.fn += "\n" + "\n".join(_extract_function(self.text, h) for h in helpers)
+        self.fn += "\n" + _extract_function(self.text, "scanAndAggregate")
+
+    def _run(self, consent_row, extra_cdr=None):
+        cdr = {
+            "cli_e164": "+911600412900",
+            "recipient_hmac": "h1",
+            "call_intent": "INQUIRY_FOLLOWUP",
+            "call_ts": 1762936200,
+            "duration_sec": 45,
+            "complaint_flag": 0,
+            "operator_ml_flag": 0,
+        }
+        if extra_cdr:
+            cdr.update(extra_cdr)
+        dlt = [{
+            "cli_e164": "+911600412900",
+            "series": "160_SERVICE_BFSI",
+            "status": 1,
+            "dlt_status": "ACTIVE",
+            "valid_from": 1758153600,
+            "valid_to": 1789689600,
+        }]
+        consent = [consent_row] if consent_row is not None else []
+        script = (
+            self.fn
+            + "\nconst out = scanAndAggregate("
+            + json.dumps(dlt) + ", " + json.dumps(consent) + ", " + json.dumps([cdr]) + ");\n"
+            "const r = out.find(x => x.cli === '+911600412900');\n"
+            "process.stdout.write(JSON.stringify({ r3: ((r.failedRulesCounts||{})['R3_ROBO_DND_MODE'] || 0) > 0 }));\n"
+        )
+        return json.loads(_run_node(script))["r3"]
+
+    def test_missing_consent_trips_r3(self):
+        self.assertTrue(self._run(None))
+
+    def test_dnd_robo_block_1_trips_r3(self):
+        self.assertTrue(self._run({"recipient_hmac": "h1", "dnd_robo_block": 1, "revoked_ts": ""}))
+
+    def test_revoked_ts_trips_r3(self):
+        self.assertTrue(self._run({"recipient_hmac": "h1", "dnd_robo_block": 0, "revoked_ts": "1762000000"}))
+
+    def test_withdrawal_ts_trips_r3(self):
+        self.assertTrue(self._run({"recipient_hmac": "h1", "dnd_robo_block": 0, "withdrawal_ts": "1762000000"}))
+
+    def test_clean_consent_allows(self):
+        self.assertFalse(
+            self._run({"recipient_hmac": "h1", "dnd_robo_block": 0, "revoked_ts": ""})
+        )
+
+    def test_browser_scan_and_aggregate_r3_matches_server_semantics(self):
+        # Aggregate assertion named per the plan; exercises all five cases.
+        self.assertTrue(self._run(None))
+        self.assertTrue(self._run({"recipient_hmac": "h1", "dnd_robo_block": 1, "revoked_ts": ""}))
+        self.assertTrue(self._run({"recipient_hmac": "h1", "dnd_robo_block": 0, "revoked_ts": "1762000000"}))
+        self.assertTrue(self._run({"recipient_hmac": "h1", "dnd_robo_block": 0, "withdrawal_ts": "1762000000"}))
+        self.assertFalse(self._run({"recipient_hmac": "h1", "dnd_robo_block": 0, "revoked_ts": ""}))
 
 
 if __name__ == "__main__":
