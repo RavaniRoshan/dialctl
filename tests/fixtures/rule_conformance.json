@@ -245,5 +245,31 @@
     "expect_failed_contains": [
       "R6_10DAY_CLUSTER"
     ]
+  },
+  {
+    "name": "series 140 does not license a 160 CLI for promo",
+    "cli_e164": "+911600412900",
+    "call_intent": "PROMOTIONAL",
+    "call_ts": 1762961400,
+    "declarations": [
+      {
+        "declaration_id": "D1",
+        "series": "140_PROMO",
+        "status": 1,
+        "dlt_status": "ACTIVE",
+        "valid_from": 1758153600,
+        "valid_to": 1789689600
+      }
+    ],
+    "consents": [],
+    "complaints_10d": {
+      "distinct": 0,
+      "ml_flags": 0
+    },
+    "expect_failed_contains": [
+      "R2_140_160_SERIES",
+      "R3_ROBO_DND_MODE"
+    ],
+    "note": "the CLI prefix governs R2, not the declared series"
   }
 ]

@@ -352,16 +352,15 @@ kbd { background: #22303d; border: 1px solid var(--border); border-bottom-width:
   }
 
   // --- Aggregation / scan ---
-  // R2_140_160_SERIES: the declared series must match the intent. Promotional
-  // needs 140; service/transactional/inquiry need 160. An unknown intent fails
-  // closed — this mirrors evaluate_rules in hydrate_and_verify.py.
+  // R2_140_160_SERIES: the calling line identity must match the intent. The
+  // CLI prefix governs (a declared 140 series does not license a 160 CLI), and
+  // an unknown intent fails closed — this mirrors evaluate_rules in
+  // hydrate_and_verify.py exactly.
   function r2Passes(cli, dlt, intent) {
-    const series = String((dlt && dlt.series) || '');
-    if (intent === 'PROMOTIONAL') {
-      return series.startsWith('140') || String(cli).startsWith('+91140');
-    }
+    const c = String(cli || '');
+    if (intent === 'PROMOTIONAL') return c.startsWith('+91140');
     if (intent === 'SERVICE' || intent === 'TRANSACTIONAL' || intent === 'INQUIRY_FOLLOWUP') {
-      return series.startsWith('160') || String(cli).startsWith('+91160');
+      return c.startsWith('+91160');
     }
     return false; // unknown intent fails closed
   }
