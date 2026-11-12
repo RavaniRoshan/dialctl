@@ -1,9 +1,14 @@
+import argparse
 import csv
 import hashlib
 import hmac
 import json
 import math
+import os
 import sqlite3
+import sys
+import tempfile
+import time
 from datetime import datetime, timedelta, timezone
 
 
@@ -479,4 +484,129 @@ def run_smoke_test(limit, out_path) -> dict:
     precision = (correct / total) if total else 0.0
     assert precision == 1.0
     return {"rows_evaluated": limit, "rule_precision": precision}
+
+
+def _benchmark_evaluate_pre_dial(iterations: int = 10000) -> dict:
+    conn = sqlite3.connect(":memory:")
+    init_db(conn)
+
+    cli_e164 = "+911600412900"
+    conn.execute(
+        "INSERT INTO dlt_declarations VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            "DLT-BENCH-01",
+            cli_e164,
+            "JIO",
+            "160_SERVICE_BFSI",
+            1,
+            "ACTIVE",
+            1758153600,
+            1789689600,
+        ),
+    )
+
+    secret = "bench-secret"
+    recipient_hmac = hmac_phone("+919876543210", secret)
+    conn.execute(
+        "INSERT INTO consent_ledger VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (
+            "CNS-BENCH-1",
+            recipient_hmac,
+            0,
+            None,
+            1762356600,
+            "artifact_sha256_bench",
+            None,
+        ),
+    )
+
+    call_ts = 1762936200
+    prev_hash = GENESIS_HASH
+    durations = []
+    start = time.perf_counter()
+    for i in range(iterations):
+        t0 = time.perf_counter()
+        rec = evaluate_pre_dial(
+            conn,
+            f"bench_{i}",
+            cli_e164,
+            recipient_hmac,
+            "INQUIRY_FOLLOWUP",
+            call_ts,
+            i + 1,
+            prev_hash,
+        )
+        durations.append((time.perf_counter() - t0) * 1000.0)
+        prev_hash = rec["attestation_hash"]
+    total = time.perf_counter() - start
+    durations_sorted = sorted(durations)
+    idx = int(math.ceil(0.99 * len(durations_sorted))) - 1
+    if idx < 0:
+        idx = 0
+    p99_ms = durations_sorted[idx]
+    iters_per_sec = iterations / total if total > 0 else 0.0
+    return {
+        "iterations": iterations,
+        "iterations_per_sec": iters_per_sec,
+        "p99_ms": p99_ms,
+    }
+
+
+def main(argv=None) -> int:
+    parser = argparse.ArgumentParser(description="TRAI A2P compliance rail CLI")
+    group = parser.add_mutually_exclusive_group(required=True)
+    group.add_argument("--self-test", action="store_true", dest="self_test")
+    group.add_argument("--smoke-test", action="store_true", dest="smoke_test")
+    group.add_argument("--benchmark", action="store_true", dest="benchmark")
+    args = parser.parse_args(argv)
+
+    if args.smoke_test:
+        with tempfile.TemporaryDirectory() as td:
+            out_path = os.path.join(td, "smoke.jsonl")
+            summary = run_smoke_test(limit=200, out_path=out_path)
+        print(json.dumps(summary, sort_keys=True))
+        return 0
+
+    if args.self_test:
+        try:
+            with tempfile.TemporaryDirectory() as td:
+                out_path = os.path.join(td, "self_test.jsonl")
+                summary = run_smoke_test(limit=200, out_path=out_path)
+                ok_summary = (
+                    summary.get("rows_evaluated") == 200
+                    and summary.get("rule_precision") == 1.0
+                )
+                records = []
+                with open(out_path, encoding="utf-8") as f:
+                    for line in f:
+                        line = line.strip()
+                        if line:
+                            records.append(json.loads(line))
+                chain_ok, chain_msg = verify_hash_chain(records)
+                ok = ok_summary and chain_ok
+                if ok:
+                    print("PASS: self-test smoke=200 precision=1.0 chain=OK")
+                    return 0
+                print(
+                    f"FAIL: smoke_ok={ok_summary} chain_ok={chain_ok} chain_msg={chain_msg} summary={summary}"
+                )
+                return 1
+        except Exception as exc:
+            print(f"FAIL: {exc}")
+            return 1
+
+    if args.benchmark:
+        result = _benchmark_evaluate_pre_dial(iterations=10000)
+        print(
+            f"iterations={result['iterations']} "
+            f"iterations_per_sec={result['iterations_per_sec']:.2f} "
+            f"p99_ms={result['p99_ms']:.4f}"
+        )
+        return 0
+
+    return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
 

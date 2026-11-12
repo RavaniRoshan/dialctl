@@ -1,5 +1,6 @@
 import json
 import sqlite3
+import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from hydrate_and_verify import (
@@ -17,6 +18,7 @@ class ComplianceGateState:
         self.secret_key = secret_key
         self.seq_no = seq_no
         self.last_attestation_hash = last_attestation_hash
+        self._lock = threading.Lock()
 
     @classmethod
     def create_with_sample_fixture(cls, secret_key):
@@ -71,19 +73,22 @@ def handle_pre_dial_payload(state, payload):
     call_ts = payload["call_ts"]
 
     recipient_hmac = hmac_phone(customer_phone, state.secret_key)
-    state.seq_no += 1
 
-    record = evaluate_pre_dial(
-        state.conn,
-        call_sid,
-        cli_e164,
-        recipient_hmac,
-        call_intent,
-        call_ts,
-        state.seq_no,
-        state.last_attestation_hash,
-    )
-    state.last_attestation_hash = record["attestation_hash"]
+    with state._lock:
+        state.seq_no += 1
+        seq_no = state.seq_no
+        prev_hash = state.last_attestation_hash
+        record = evaluate_pre_dial(
+            state.conn,
+            call_sid,
+            cli_e164,
+            recipient_hmac,
+            call_intent,
+            call_ts,
+            seq_no,
+            prev_hash,
+        )
+        state.last_attestation_hash = record["attestation_hash"]
 
     status = 200 if record["decision"] == "ALLOW" else 403
     return (status, record)
@@ -107,7 +112,28 @@ class _ComplianceHandler(BaseHTTPRequestHandler):
             except ValueError:
                 length = 0
             raw = self.rfile.read(length) if length > 0 else b"{}"
-            payload = json.loads(raw.decode("utf-8"))
+            try:
+                payload = json.loads(raw.decode("utf-8"))
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                self._send_json(400, {"error": "invalid JSON"})
+                return
+            if not isinstance(payload, dict):
+                self._send_json(400, {"error": "non-object JSON"})
+                return
+            required = ("call_sid", "cli_e164", "customer_phone", "call_intent", "call_ts")
+            missing = [k for k in required if k not in payload]
+            if missing:
+                self._send_json(400, {"error": f"missing required fields: {', '.join(missing)}"})
+                return
+            non_conforming = []
+            for k in ("call_sid", "cli_e164", "customer_phone", "call_intent"):
+                if not isinstance(payload[k], str):
+                    non_conforming.append(k)
+            if not isinstance(payload["call_ts"], int) or isinstance(payload["call_ts"], bool):
+                non_conforming.append("call_ts")
+            if non_conforming:
+                self._send_json(400, {"error": f"non-conforming required fields: {', '.join(non_conforming)}"})
+                return
             status, record = handle_pre_dial_payload(self.state, payload)
             self._send_json(status, record)
             return

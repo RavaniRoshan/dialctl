@@ -1,6 +1,8 @@
+import concurrent.futures
 import time
 import unittest
 
+from hydrate_and_verify import verify_hash_chain
 from middleware import ComplianceBlockError, SarvamExotelComplianceMiddleware
 from server import ComplianceGateState, handle_pre_dial_payload
 
@@ -43,6 +45,32 @@ class TestWebhook(unittest.TestCase):
             )
         self.assertIn("R1_CLI_DECLARED", ctx.exception.failed_rules)
         self.assertFalse(dialed)
+
+    def test_concurrent_pre_dial_chain_integrity(self):
+        state = ComplianceGateState.create_with_sample_fixture(secret_key="test-secret")
+        n = 40
+
+        def worker(i):
+            payload = {
+                "call_sid": f"c_concurrent_{i}",
+                "cli_e164": "+911600412900",
+                "customer_phone": "+919876543210",
+                "call_intent": "INQUIRY_FOLLOWUP",
+                "call_ts": 1762936200,
+            }
+            status, record = handle_pre_dial_payload(state, payload)
+            return status, record
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
+            futures = [executor.submit(worker, i) for i in range(n)]
+            results = [f.result() for f in futures]
+
+        records = [record for _status, record in results]
+        seq_nos = [r["seq_no"] for r in records]
+        self.assertEqual(len(set(seq_nos)), n)
+        self.assertEqual(sorted(seq_nos), list(range(1, n + 1)))
+        records_in_seq_order = sorted(records, key=lambda r: r["seq_no"])
+        self.assertEqual(verify_hash_chain(records_in_seq_order), (True, "OK"))
 
 
 if __name__ == "__main__":
