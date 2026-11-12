@@ -352,6 +352,30 @@ kbd { background: #22303d; border: 1px solid var(--border); border-bottom-width:
   }
 
   // --- Aggregation / scan ---
+  // R2_140_160_SERIES: the calling line identity must match the intent. The
+  // CLI prefix governs (a declared 140 series does not license a 160 CLI), and
+  // an unknown intent fails closed — this mirrors evaluate_rules in
+  // hydrate_and_verify.py exactly.
+  function r2Passes(cli, dlt, intent) {
+    const c = String(cli || '');
+    if (intent === 'PROMOTIONAL') return c.startsWith('+91140');
+    if (intent === 'SERVICE' || intent === 'TRANSACTIONAL' || intent === 'INQUIRY_FOLLOWUP') {
+      return c.startsWith('+91160');
+    }
+    return false; // unknown intent fails closed
+  }
+
+  // R3_ROBO_DND_MODE: block when consent is missing, the robo-call DND block is
+  // enabled, or consent was revoked. A withdrawal_ts on its own does NOT trip
+  // R3 (the Python engine treats withdrawal separately) — this mirrors
+  // evaluate_rules exactly.
+  function r3Trips(consent) {
+    const hasValue = (v) => v !== undefined && v !== null && String(v).trim() !== '';
+    return !consent
+      || Number(consent.dnd_robo_block) === 1
+      || hasValue(consent.revoked_ts);
+  }
+
   function scanAndAggregate(dltRows, consentRows, cdrRows) {
     const dltByCli = new Map();
     for (const d of dltRows) {
@@ -399,23 +423,11 @@ kbd { background: #22303d; border: 1px solid var(--border); border-bottom-width:
       }
       // R2_140_160_SERIES
       const intent = String(ev.call_intent || '').toUpperCase();
-      const series = String((dlt && dlt.series) || '');
-      if (intent === 'PROMOTIONAL') {
-        if (!series.startsWith('140') && !cli.startsWith('+91140')) failed.push('R2_140_160_SERIES');
-      } else if (intent === 'SERVICE' || intent === 'TRANSACTIONAL' || intent === 'INQUIRY_FOLLOWUP') {
-        if (!series.startsWith('160') && !cli.startsWith('+91160')) failed.push('R2_140_160_SERIES');
-      }
-      // R3_ROBO_DND_MODE: mirror server evaluate_pre_dial — block when consent
-      // is missing, dnd_robo_block == 1, or consent was withdrawn/revoked.
+      if (!r2Passes(cli, dlt, intent)) failed.push('R2_140_160_SERIES');
+      // R3_ROBO_DND_MODE
       const consentKey = ev.recipient_hmac || ev.recipient_phone || '';
       const consent = consentKey ? consentByHmac.get(consentKey) : null;
-      const hasValue = (v) => v !== undefined && v !== null && String(v).trim() !== '';
-      if (!consent
-          || Number(consent.dnd_robo_block) === 1
-          || hasValue(consent.revoked_ts)
-          || hasValue(consent.withdrawal_ts)) {
-        failed.push('R3_ROBO_DND_MODE');
-      }
+      if (r3Trips(consent)) failed.push('R3_ROBO_DND_MODE');
       // R4_7DAY_INQUIRY
       if (intent === 'INQUIRY_FOLLOWUP') {
         const ivt = consent ? Number(consent.inquiry_verified_ts || 0) : 0;
@@ -914,6 +926,7 @@ kbd { background: #22303d; border: 1px solid var(--border); border-bottom-width:
   window.__traiAudit = {
     DB_NAME, PREFS_KEY, RULES, R4_WINDOW_SEC, R6_WINDOW_SEC,
     terminationExposureInr, computeRiskScore, synthesizeSample, scanAndAggregate,
+    r2Passes, r3Trips,
     get rows() { return rows; }, get selectedIndex() { return selectedIndex; }
   };
 

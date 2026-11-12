@@ -1,0 +1,277 @@
+[
+  {
+    "name": "promo requires 140",
+    "cli_e164": "+911600412900",
+    "call_intent": "PROMOTIONAL",
+    "call_ts": 1762961400,
+    "declarations": [
+      {
+        "declaration_id": "D1",
+        "series": "160_SERVICE_BFSI",
+        "status": 1,
+        "dlt_status": "ACTIVE",
+        "valid_from": 1758153600,
+        "valid_to": 1789689600
+      }
+    ],
+    "consents": [],
+    "complaints_10d": {
+      "distinct": 0,
+      "ml_flags": 0
+    },
+    "note": "PROMOTIONAL on a 160 CLI fails R2",
+    "expect_failed": [
+      "R2_140_160_SERIES",
+      "R3_ROBO_DND_MODE"
+    ]
+  },
+  {
+    "name": "unknown intent fails closed",
+    "cli_e164": "+911600412900",
+    "call_intent": "WEIRD_INTENT",
+    "call_ts": 1762961400,
+    "declarations": [
+      {
+        "declaration_id": "D1",
+        "series": "160_SERVICE_BFSI",
+        "status": 1,
+        "dlt_status": "ACTIVE",
+        "valid_from": 1758153600,
+        "valid_to": 1789689600
+      }
+    ],
+    "consents": [],
+    "complaints_10d": {
+      "distinct": 0,
+      "ml_flags": 0
+    },
+    "note": "unknown intent must fail R2 in BOTH runtimes (this is the drift the fix targets)",
+    "expect_failed": [
+      "R2_140_160_SERIES",
+      "R3_ROBO_DND_MODE"
+    ]
+  },
+  {
+    "name": "inquiry follow-up inside window",
+    "cli_e164": "+911600412900",
+    "call_intent": "INQUIRY_FOLLOWUP",
+    "call_ts": 1762961400,
+    "declarations": [
+      {
+        "declaration_id": "D1",
+        "series": "160_SERVICE_BFSI",
+        "status": 1,
+        "dlt_status": "ACTIVE",
+        "valid_from": 1758153600,
+        "valid_to": 1789689600
+      }
+    ],
+    "consents": [
+      {
+        "consent_id": "C1",
+        "dnd_robo_block": 0,
+        "withdrawal_ts": null,
+        "inquiry_verified_ts": 1762356600,
+        "inquiry_artifact_sha256": "artifact_sha256_ok",
+        "revoked_ts": null
+      }
+    ],
+    "complaints_10d": {
+      "distinct": 0,
+      "ml_flags": 0
+    },
+    "expect_failed": []
+  },
+  {
+    "name": "dnd block trips R3",
+    "cli_e164": "+911600412900",
+    "call_intent": "INQUIRY_FOLLOWUP",
+    "call_ts": 1762961400,
+    "declarations": [
+      {
+        "declaration_id": "D1",
+        "series": "160_SERVICE_BFSI",
+        "status": 1,
+        "dlt_status": "ACTIVE",
+        "valid_from": 1758153600,
+        "valid_to": 1789689600
+      }
+    ],
+    "consents": [
+      {
+        "consent_id": "C1",
+        "dnd_robo_block": 1,
+        "withdrawal_ts": null,
+        "inquiry_verified_ts": 1762356600,
+        "inquiry_artifact_sha256": "artifact_sha256_ok",
+        "revoked_ts": null
+      }
+    ],
+    "complaints_10d": {
+      "distinct": 0,
+      "ml_flags": 0
+    },
+    "expect_failed": [
+      "R3_ROBO_DND_MODE"
+    ]
+  },
+  {
+    "name": "revoked consent trips R3",
+    "cli_e164": "+911600412900",
+    "call_intent": "INQUIRY_FOLLOWUP",
+    "call_ts": 1762961400,
+    "declarations": [
+      {
+        "declaration_id": "D1",
+        "series": "160_SERVICE_BFSI",
+        "status": 1,
+        "dlt_status": "ACTIVE",
+        "valid_from": 1758153600,
+        "valid_to": 1789689600
+      }
+    ],
+    "consents": [
+      {
+        "consent_id": "C1",
+        "dnd_robo_block": 0,
+        "withdrawal_ts": null,
+        "inquiry_verified_ts": 1762356600,
+        "inquiry_artifact_sha256": "artifact_sha256_ok",
+        "revoked_ts": 1762000000
+      }
+    ],
+    "complaints_10d": {
+      "distinct": 0,
+      "ml_flags": 0
+    },
+    "expect_failed": [
+      "R3_ROBO_DND_MODE"
+    ]
+  },
+  {
+    "name": "withdrawal_ts alone does NOT trip R3 (Python semantics)",
+    "cli_e164": "+911600412900",
+    "call_intent": "INQUIRY_FOLLOWUP",
+    "call_ts": 1762961400,
+    "declarations": [
+      {
+        "declaration_id": "D1",
+        "series": "160_SERVICE_BFSI",
+        "status": 1,
+        "dlt_status": "ACTIVE",
+        "valid_from": 1758153600,
+        "valid_to": 1789689600
+      }
+    ],
+    "consents": [
+      {
+        "consent_id": "C1",
+        "dnd_robo_block": 0,
+        "withdrawal_ts": 1762000000,
+        "inquiry_verified_ts": 1762356600,
+        "inquiry_artifact_sha256": "artifact_sha256_ok",
+        "revoked_ts": null
+      }
+    ],
+    "complaints_10d": {
+      "distinct": 0,
+      "ml_flags": 0
+    },
+    "expect_failed": [],
+    "note": "withdrawal_ts is NOT an R3 trigger in the Python engine; JS previously diverged here"
+  },
+  {
+    "name": "three distinct complainants trip R6",
+    "cli_e164": "+911600412900",
+    "call_intent": "INQUIRY_FOLLOWUP",
+    "call_ts": 1762961400,
+    "declarations": [
+      {
+        "declaration_id": "D1",
+        "series": "160_SERVICE_BFSI",
+        "status": 1,
+        "dlt_status": "ACTIVE",
+        "valid_from": 1758153600,
+        "valid_to": 1789689600
+      }
+    ],
+    "consents": [
+      {
+        "consent_id": "C1",
+        "dnd_robo_block": 0,
+        "withdrawal_ts": null,
+        "inquiry_verified_ts": 1762356600,
+        "inquiry_artifact_sha256": "artifact_sha256_ok",
+        "revoked_ts": null
+      }
+    ],
+    "complaints_10d": {
+      "distinct": 3,
+      "ml_flags": 0
+    },
+    "expect_failed": [
+      "R6_10DAY_CLUSTER"
+    ],
+    "r6": true
+  },
+  {
+    "name": "two complainants with ML flag trip R6",
+    "cli_e164": "+911600412900",
+    "call_intent": "INQUIRY_FOLLOWUP",
+    "call_ts": 1762961400,
+    "declarations": [
+      {
+        "declaration_id": "D1",
+        "series": "160_SERVICE_BFSI",
+        "status": 1,
+        "dlt_status": "ACTIVE",
+        "valid_from": 1758153600,
+        "valid_to": 1789689600
+      }
+    ],
+    "consents": [
+      {
+        "consent_id": "C1",
+        "dnd_robo_block": 0,
+        "withdrawal_ts": null,
+        "inquiry_verified_ts": 1762356600,
+        "inquiry_artifact_sha256": "artifact_sha256_ok",
+        "revoked_ts": null
+      }
+    ],
+    "complaints_10d": {
+      "distinct": 2,
+      "ml_flags": 1
+    },
+    "expect_failed": [
+      "R6_10DAY_CLUSTER"
+    ],
+    "r6": true
+  },
+  {
+    "name": "series 140 does not license a 160 CLI for promo",
+    "cli_e164": "+911600412900",
+    "call_intent": "PROMOTIONAL",
+    "call_ts": 1762961400,
+    "declarations": [
+      {
+        "declaration_id": "D1",
+        "series": "140_PROMO",
+        "status": 1,
+        "dlt_status": "ACTIVE",
+        "valid_from": 1758153600,
+        "valid_to": 1789689600
+      }
+    ],
+    "consents": [],
+    "complaints_10d": {
+      "distinct": 0,
+      "ml_flags": 0
+    },
+    "note": "the CLI prefix governs R2, not the declared series",
+    "expect_failed": [
+      "R2_140_160_SERIES",
+      "R3_ROBO_DND_MODE"
+    ]
+  }
+]

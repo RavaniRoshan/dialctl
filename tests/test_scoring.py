@@ -61,3 +61,21 @@ class TestScoring(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestSmokeFixtureSeam(unittest.TestCase):
+    """The smoke fixture builder is reusable on its own, so a test can check
+    the fixture without running the whole smoke harness."""
+
+    def test_build_smoke_fixture_returns_a_seeded_connection(self):
+        from hydrate_and_verify import build_smoke_fixture
+
+        conn = build_smoke_fixture()
+        tables = {
+            row[0]
+            for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+        }
+        self.assertIn("dlt_declarations", tables)
+        decls = conn.execute("SELECT COUNT(*) FROM dlt_declarations").fetchone()[0]
+        consents = conn.execute("SELECT COUNT(*) FROM consent_ledger").fetchone()[0]
+        self.assertEqual((decls, consents), (1, 1))

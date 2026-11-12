@@ -1,7 +1,14 @@
 import sqlite3
 import unittest
 
-from hydrate_and_verify import GENESIS_HASH, evaluate_pre_dial, hmac_phone, init_db
+from hydrate_and_verify import (
+    GENESIS_HASH,
+    evaluate_pre_dial,
+    evaluate_rules,
+    hmac_phone,
+    init_db,
+    load_call_facts,
+)
 
 
 class TestPreDialRules(unittest.TestCase):
@@ -67,3 +74,74 @@ class TestPreDialRules(unittest.TestCase):
             self.conn, "c_ml_block", "+911600412900", self.r_ok, "INQUIRY_FOLLOWUP", 1762936200, 2, rec["attestation_hash"]
         )
         self.assertIn("R6_10DAY_CLUSTER", rec_blocked["failed_rules"])
+
+
+class TestPureRuleEvaluation(unittest.TestCase):
+    """The rules must be reachable as a pure function over plain facts, with no
+    database and no chain mechanics. This is the seam tests should cross."""
+
+    def test_evaluate_rules_is_pure_over_facts(self) -> None:
+        facts = {
+            "cli_e164": "+911600412900",
+            "call_intent": "INQUIRY_FOLLOWUP",
+            "call_ts": 1762961400,
+            "declarations": [
+                {
+                    "declaration_id": "DLT-1",
+                    "series": "160_SERVICE_BFSI",
+                    "status": 1,
+                    "dlt_status": "ACTIVE",
+                    "valid_from": 1758153600,
+                    "valid_to": 1789689600,
+                }
+            ],
+            "consents": [
+                {
+                    "consent_id": "CNS-1",
+                    "dnd_robo_block": 0,
+                    "withdrawal_ts": None,
+                    "inquiry_verified_ts": 1762356600,
+                    "inquiry_artifact_sha256": "artifact_sha256_ok",
+                    "revoked_ts": None,
+                }
+            ],
+            "complaints_10d": {"distinct": 0, "ml_flags": 0},
+        }
+        decision = evaluate_rules(facts)
+        self.assertEqual(decision["decision"], "ALLOW")
+        self.assertEqual(decision["failed_rules"], [])
+
+    def test_evaluate_rules_does_not_touch_a_connection(self) -> None:
+        # Passing None for a connection would explode if the rules reached for one.
+        facts = {
+            "cli_e164": "+911600412900",
+            "call_intent": "PROMOTIONAL",
+            "call_ts": 1762961400,
+            "declarations": [],
+            "consents": [],
+            "complaints_10d": {"distinct": 0, "ml_flags": 0},
+        }
+        decision = evaluate_rules(facts)
+        self.assertEqual(decision["decision"], "BLOCK")
+        self.assertIn("R1_CLI_DECLARED", decision["failed_rules"])
+        self.assertIn("R2_140_160_SERIES", decision["failed_rules"])
+
+    def test_evaluate_pre_dial_agrees_with_the_pure_rules(self) -> None:
+        conn = sqlite3.connect(":memory:")
+        init_db(conn)
+        conn.execute(
+            "INSERT INTO dlt_declarations VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            ("DLT-1", "+911600412900", "JIO", "160_SERVICE_BFSI", 1, "ACTIVE", 1758153600, 1789689600),
+        )
+        r = hmac_phone("+919876543210", "secret")
+        conn.execute(
+            "INSERT INTO consent_ledger VALUES (?, ?, ?, ?, ?, ?, ?)",
+            ("CNS-1", r, 0, None, 1762356600, "artifact_sha256_ok", None),
+        )
+        record = evaluate_pre_dial(
+            conn, "c1", "+911600412900", r, "INQUIRY_FOLLOWUP", 1762961400, 1, GENESIS_HASH
+        )
+        facts = load_call_facts(conn, "+911600412900", r, "INQUIRY_FOLLOWUP", 1762961400)
+        decision = evaluate_rules(facts)
+        self.assertEqual(decision["decision"], record["decision"])
+        self.assertEqual(decision["failed_rules"], record["failed_rules"])
