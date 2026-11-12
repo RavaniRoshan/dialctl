@@ -1,0 +1,17 @@
+# SDD scratch workspace (ledger, briefs, review packages)
+.superpowers/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+
+# Runtime artifacts
+attestations.jsonl
+*.db
+*.db-wal
+*.db-shm
+
+# Editor / OS
+.DS_Store
