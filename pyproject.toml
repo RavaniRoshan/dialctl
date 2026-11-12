@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dialctl"
+version = "0.1.0"
+description = "Local-first TRAI TCCCPR A2P voice pre-dial compliance gate and attestation ledger"
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "MIT" }
+authors = [{ name = "Ravani Roshan" }]
+keywords = ["trai", "tcccpr", "a2p", "voice", "compliance", "dlT"]
+dependencies = []
+
+[project.scripts]
+dialctl = "hydrate_and_verify:main"
+
+[tool.setuptools]
+py-modules = ["hydrate_and_verify", "server", "middleware"]
