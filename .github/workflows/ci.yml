@@ -1,0 +1,35 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Unit tests
+        run: python3 -m unittest discover -s tests -p "test_*.py" -v
+
+      - name: Self-test (smoke + ledger chain)
+        run: python3 hydrate_and_verify.py --self-test
+
+      - name: Smoke test (200 rows)
+        run: python3 hydrate_and_verify.py --smoke-test --limit 200
+
+      - name: UI invariant verification (tokens + FIPS SHA-256 vector)
+        run: python3 scripts/verify_ui_invariants.py

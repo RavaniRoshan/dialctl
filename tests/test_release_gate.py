@@ -25,6 +25,22 @@ class TestReleaseGateArtifacts(unittest.TestCase):
         ):
             self.assertIn(token, readme)
 
+    def test_github_actions_ci_workflow_exists(self) -> None:
+        root = pathlib.Path(".")
+        ci = root / ".github" / "workflows" / "ci.yml"
+        self.assertTrue(ci.exists(), "Missing .github/workflows/ci.yml")
+        text = ci.read_text(encoding="utf-8")
+        for token in (
+            "python3 -m unittest discover -s tests -p \"test_*.py\" -v",
+            "python3 hydrate_and_verify.py --self-test",
+            "python3 hydrate_and_verify.py --smoke-test --limit 200",
+            "python3 scripts/verify_ui_invariants.py",
+            "python-version",
+            "3.12",
+            "node-version",
+        ):
+            self.assertIn(token, text, f"ci.yml missing: {token}")
+
 
 if __name__ == "__main__":
     unittest.main()
