@@ -1,11 +1,16 @@
 import csv
 import hashlib
 import hmac
+import json
 import sqlite3
 from datetime import datetime, timedelta, timezone
 
 
 IST = timezone(timedelta(seconds=19800))
+
+GENESIS_HASH = "0" * 64
+SEVEN_DAYS_SEC = 604800
+TEN_DAYS_SEC = 864000
 
 
 def _normalize_e164(phone: str) -> str:
@@ -183,3 +188,158 @@ def hydrate_csv_tables(
 
     conn.commit()
     return counts
+
+
+def compute_attestation_hash(prev_hash: str, payload: dict) -> str:
+    body = {k: v for k, v in payload.items() if k != "attestation_hash"}
+    canonical = json.dumps(body, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(f"{prev_hash}|{canonical}".encode()).hexdigest()
+
+
+def evaluate_pre_dial(
+    conn: sqlite3.Connection,
+    call_sid: str,
+    cli_e164: str,
+    recipient_hmac: str,
+    call_intent: str,
+    call_ts: int,
+    seq_no: int,
+    prev_hash: str,
+) -> dict:
+    failed_rules: list[str] = []
+    declaration_id = None
+    consent_id = None
+    inquiry_age_sec = None
+
+    # R1_CLI_DECLARED
+    decl_rows = conn.execute(
+        """
+        SELECT declaration_id, series, status, dlt_status, valid_from, valid_to
+        FROM dlt_declarations
+        WHERE cli_e164 = ?
+        """,
+        (cli_e164,),
+    ).fetchall()
+    matched_decl = None
+    for row in decl_rows:
+        did, _series, status, dlt_status, valid_from, valid_to = row
+        active = (status == 1) or (dlt_status == "ACTIVE")
+        if active and valid_from <= call_ts <= valid_to:
+            matched_decl = row
+            break
+    if matched_decl is None:
+        failed_rules.append("R1_CLI_DECLARED")
+    else:
+        declaration_id = matched_decl[0]
+
+    # R2_140_160_SERIES
+    if call_intent == "PROMOTIONAL":
+        if not cli_e164.startswith("+91140"):
+            failed_rules.append("R2_140_160_SERIES")
+    elif call_intent in ("SERVICE", "TRANSACTIONAL", "INQUIRY_FOLLOWUP"):
+        if not cli_e164.startswith("+91160"):
+            failed_rules.append("R2_140_160_SERIES")
+    else:
+        failed_rules.append("R2_140_160_SERIES")
+
+    # Consent rows for recipient
+    consent_rows = conn.execute(
+        """
+        SELECT consent_id, consent_flag, withdrawal_ts, inquiry_verified_ts,
+               inquiry_artifact_sha256, revoked_ts
+        FROM consent_ledger
+        WHERE recipient_hmac = ?
+        """,
+        (recipient_hmac,),
+    ).fetchall()
+
+    # R3_ROBO_DND_MODE: block only on explicit DND/robo/withdrawal marker
+    r3_trip = False
+    for c in consent_rows:
+        _cid, _consent_flag, withdrawal_ts, _ivt, _artifact, revoked_ts = c
+        if withdrawal_ts is not None or revoked_ts is not None:
+            r3_trip = True
+            break
+    if r3_trip:
+        failed_rules.append("R3_ROBO_DND_MODE")
+
+    # R4_7DAY_INQUIRY and consent/inquiry fields
+    if call_intent == "INQUIRY_FOLLOWUP":
+        r4_ok = False
+        best_consent = None
+        # Prefer a consent row that satisfies R4
+        for c in consent_rows:
+            cid, _cf, _wts, ivt, artifact, _rts = c
+            if ivt is not None and artifact is not None:
+                age = int(call_ts - ivt)
+                if 0 <= age <= SEVEN_DAYS_SEC:
+                    r4_ok = True
+                    best_consent = c
+                    inquiry_age_sec = age
+                    consent_id = cid
+                    break
+        if not r4_ok:
+            failed_rules.append("R4_7DAY_INQUIRY")
+            # Best-effort reporting: pick a consent with inquiry data/age if present
+            for c in consent_rows:
+                cid, _cf, _wts, ivt, artifact, _rts = c
+                if ivt is not None and artifact is not None:
+                    inquiry_age_sec = int(call_ts - ivt)
+                    consent_id = cid
+                    best_consent = c
+                    break
+            if best_consent is None:
+                for c in consent_rows:
+                    cid, _cf, _wts, ivt, _artifact, _rts = c
+                    if ivt is not None:
+                        inquiry_age_sec = int(call_ts - ivt)
+                        consent_id = cid
+                        best_consent = c
+                        break
+            if best_consent is None and consent_rows:
+                consent_id = consent_rows[0][0]
+    else:
+        if consent_rows:
+            consent_id = consent_rows[0][0]
+
+    # R5_CALL_WINDOW
+    ist_sec_of_day = (call_ts + 19800) % 86400
+    if not (32400 <= ist_sec_of_day <= 75600):
+        failed_rules.append("R5_CALL_WINDOW")
+
+    # R6_10DAY_CLUSTER
+    window_start = call_ts - TEN_DAYS_SEC
+    row = conn.execute(
+        """
+        SELECT COUNT(DISTINCT complainant_hmac), COALESCE(SUM(operator_ml_flag), 0)
+        FROM cdr_events
+        WHERE cli_e164 = ?
+          AND call_ts >= ?
+          AND call_ts <= ?
+          AND complaint_flag = 1
+        """,
+        (cli_e164, window_start, call_ts),
+    ).fetchone()
+    distinct = row[0] if row else 0
+    ml = row[1] if row else 0
+    if distinct >= 3 or (distinct >= 2 and ml >= 1):
+        failed_rules.append("R6_10DAY_CLUSTER")
+
+    decision = "ALLOW" if not failed_rules else "BLOCK"
+    record = {
+        "seq_no": seq_no,
+        "call_sid": call_sid,
+        "evaluated_ts": call_ts,
+        "cli_e164": cli_e164,
+        "recipient_hmac": recipient_hmac,
+        "call_intent": call_intent,
+        "decision": decision,
+        "failed_rules": failed_rules,
+        "inquiry_age_sec": inquiry_age_sec,
+        "declaration_id": declaration_id,
+        "consent_id": consent_id,
+        "prev_hash": prev_hash,
+    }
+    record["attestation_hash"] = compute_attestation_hash(prev_hash, record)
+    return record
+
