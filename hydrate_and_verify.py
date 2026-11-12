@@ -575,7 +575,12 @@ def select_healthy_clis(conn: sqlite3.Connection, now_ts) -> list[dict]:
     return healthy
 
 
-def run_smoke_test(limit, out_path) -> dict:
+def build_smoke_fixture() -> sqlite3.Connection:
+    """Build the in-memory database the smoke run evaluates against.
+
+    Kept separate from the harness so a test can inspect the fixture on its
+    own, without running 200 evaluations.
+    """
     conn = sqlite3.connect(":memory:")
     init_db(conn)
 
@@ -595,7 +600,6 @@ def run_smoke_test(limit, out_path) -> dict:
     )
 
     recipient_hmac = hmac_phone("+919876543210", "smoke-secret")
-    inquiry_verified_ts = 1762356600
     conn.execute(
         "INSERT INTO consent_ledger VALUES (?, ?, ?, ?, ?, ?, ?)",
         (
@@ -603,12 +607,19 @@ def run_smoke_test(limit, out_path) -> dict:
             recipient_hmac,
             0,
             None,
-            inquiry_verified_ts,
+            1762356600,
             "artifact_sha256_smoke",
             None,
         ),
     )
+    return conn
 
+
+def run_smoke_test(limit, out_path) -> dict:
+    conn = build_smoke_fixture()
+
+    cli_e164 = "+911600412900"
+    recipient_hmac = hmac_phone("+919876543210", "smoke-secret")
     call_ts = 1762936200  # 2026-11-12 14:00:00 IST, inquiry age 579600s
     records = []
     prev_hash = GENESIS_HASH
