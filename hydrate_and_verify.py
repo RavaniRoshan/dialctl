@@ -132,6 +132,70 @@ def _pick(row, *names):
     return None
 
 
+def map_dlt_row(row: dict) -> tuple:
+    """Map one DLT CSV row to a dlt_declarations tuple. Pure.
+
+    Accepts both the current header spelling (operator_name / series_type /
+    a2p_voice_declared / valid_from_ts / valid_to_ts) and the legacy one
+    (operator / series / status / valid_from / valid_to).
+    """
+    a2p_declared = _opt_int(_pick(row, "a2p_voice_declared"))
+    if a2p_declared is None:
+        a2p_declared = _opt_int(_pick(row, "status"))
+    return (
+        _pick(row, "declaration_id"),
+        _normalize_e164(_pick(row, "cli_e164")),
+        _pick(row, "operator", "operator_name"),
+        _pick(row, "series", "series_type"),
+        a2p_declared,
+        _pick(row, "dlt_status", "status"),
+        _opt_int(_pick(row, "valid_from", "valid_from_ts")),
+        _opt_int(_pick(row, "valid_to", "valid_to_ts")),
+    )
+
+
+def map_consent_row(row: dict, secret_key: str) -> tuple:
+    """Map one consent CSV row to a consent_ledger tuple. Pure; hashes the phone."""
+    return (
+        _pick(row, "consent_id"),
+        _hash_phone_or_none(_pick(row, "recipient_phone", "recipient_hmac"), secret_key),
+        _opt_int(_pick(row, "dnd_robo_block", "consent_flag")),
+        # explicit_consent_ts is when consent was GIVEN, not withdrawn; it must
+        # never populate withdrawal_ts or revoked_ts.
+        _opt_int(row.get("withdrawal_ts")),
+        _opt_int(row.get("inquiry_verified_ts")),
+        _opt_text(row.get("inquiry_artifact_sha256")),
+        _opt_int(row.get("revoked_ts")),
+    )
+
+
+def map_cdr_row(row: dict, secret_key: str) -> tuple:
+    """Map one CDR CSV row to a cdr_events tuple. Pure; hashes the phones and
+    parses a naive call_ts as IST."""
+    call_ts_raw = _pick(row, "call_ts").strip()
+    if call_ts_raw.lstrip("-").isdigit():
+        call_ts = int(call_ts_raw)
+    else:
+        call_ts = parse_ist_timestamp(call_ts_raw)
+    return (
+        _pick(row, "event_id", "call_sid"),
+        _normalize_e164(_pick(row, "cli_e164")),
+        _hash_phone_or_none(_pick(row, "recipient_phone", "recipient_hmac"), secret_key),
+        _pick(row, "call_intent"),
+        call_ts,
+        _opt_int(row.get("duration_sec")),
+        _opt_int(_pick(row, "complaint_flag", "ucc_complaint_filed")),
+        _hash_phone_or_none(row.get("complainant_phone"), secret_key),
+        _opt_int(row.get("operator_ml_flag")),
+    )
+
+
+def _load_csv_rows(path: str) -> list[dict]:
+    """Read a CSV file into a list of dict rows. The file seam."""
+    with open(path, newline="", encoding="utf-8") as f:
+        return list(csv.DictReader(f))
+
+
 def hydrate_csv_tables(
     conn: sqlite3.Connection,
     dlt_csv: str,
@@ -139,79 +203,35 @@ def hydrate_csv_tables(
     cdr_csv: str,
     secret_key: str,
 ) -> dict[str, int]:
+    """Load three CSV exports into their tables, returning per-table counts.
+
+    Composition only: read (paths → rows), map (pure, see map_*_row), insert.
+    """
     counts: dict[str, int] = {}
 
-    with open(dlt_csv, newline="", encoding="utf-8") as f:
-        rows = list(csv.DictReader(f))
-    for row in rows:
-        declaration_id = _pick(row, "declaration_id")
-        cli = _normalize_e164(_pick(row, "cli_e164"))
-        operator = _pick(row, "operator", "operator_name")
-        series = _pick(row, "series", "series_type")
-        dlt_status = _pick(row, "dlt_status", "status")
-        a2p_declared = _opt_int(_pick(row, "a2p_voice_declared"))
-        if a2p_declared is None:
-            a2p_declared = _opt_int(_pick(row, "status"))
+    dlt_rows = _load_csv_rows(dlt_csv)
+    for row in dlt_rows:
         conn.execute(
             "INSERT INTO dlt_declarations VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (
-                declaration_id,
-                cli,
-                operator,
-                series,
-                a2p_declared,
-                dlt_status,
-                _opt_int(_pick(row, "valid_from", "valid_from_ts")),
-                _opt_int(_pick(row, "valid_to", "valid_to_ts")),
-            ),
+            map_dlt_row(row),
         )
-    counts["dlt"] = len(rows)
+    counts["dlt"] = len(dlt_rows)
 
-    with open(consent_csv, newline="", encoding="utf-8") as f:
-        rows = list(csv.DictReader(f))
-    for row in rows:
-        recipient_hmac = _hash_phone_or_none(
-            _pick(row, "recipient_phone", "recipient_hmac"), secret_key
-        )
+    consent_rows = _load_csv_rows(consent_csv)
+    for row in consent_rows:
         conn.execute(
             "INSERT INTO consent_ledger VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (
-                _pick(row, "consent_id"),
-                recipient_hmac,
-                _opt_int(_pick(row, "dnd_robo_block", "consent_flag")),
-                # explicit_consent_ts is when consent was GIVEN, not withdrawn;
-                # it must never populate withdrawal_ts or revoked_ts.
-                _opt_int(row.get("withdrawal_ts")),
-                _opt_int(row.get("inquiry_verified_ts")),
-                _opt_text(row.get("inquiry_artifact_sha256")),
-                _opt_int(row.get("revoked_ts")),
-            ),
+            map_consent_row(row, secret_key),
         )
-    counts["consent"] = len(rows)
+    counts["consent"] = len(consent_rows)
 
-    with open(cdr_csv, newline="", encoding="utf-8") as f:
-        rows = list(csv.DictReader(f))
-    for row in rows:
-        call_ts_raw = _pick(row, "call_ts").strip()
-        if call_ts_raw.lstrip("-").isdigit():
-            call_ts = int(call_ts_raw)
-        else:
-            call_ts = parse_ist_timestamp(call_ts_raw)
+    cdr_rows = _load_csv_rows(cdr_csv)
+    for row in cdr_rows:
         conn.execute(
             "INSERT INTO cdr_events VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (
-                _pick(row, "event_id", "call_sid"),
-                _normalize_e164(_pick(row, "cli_e164")),
-                _hash_phone_or_none(_pick(row, "recipient_phone", "recipient_hmac"), secret_key),
-                _pick(row, "call_intent"),
-                call_ts,
-                _opt_int(row.get("duration_sec")),
-                _opt_int(_pick(row, "complaint_flag", "ucc_complaint_filed")),
-                _hash_phone_or_none(row.get("complainant_phone"), secret_key),
-                _opt_int(row.get("operator_ml_flag")),
-            ),
+            map_cdr_row(row, secret_key),
         )
-    counts["cdr"] = len(rows)
+    counts["cdr"] = len(cdr_rows)
 
     conn.commit()
     return counts

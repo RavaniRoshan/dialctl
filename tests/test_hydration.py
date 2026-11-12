@@ -139,3 +139,88 @@ class TestHydration(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestCsvRowMapping(unittest.TestCase):
+    """The mapping from a CSV row to a table row is pure and testable on its
+    own — no files, no database. The alias policy lives in one place."""
+
+    def test_map_consent_row_hashes_the_phone(self) -> None:
+        from hydrate_and_verify import map_consent_row
+
+        row = map_consent_row(
+            {
+                "consent_id": "CNS-1",
+                "recipient_phone": "98765 43210",
+                "dnd_robo_block": "0",
+                "explicit_consent_ts": "1762000000",
+                "inquiry_verified_ts": "1762800000",
+                "inquiry_artifact_sha256": "proof",
+                "revoked_ts": "",
+            },
+            secret_key="sec",
+        )
+        self.assertEqual(row[0], "CNS-1")
+        self.assertEqual(len(row[1]), 64)  # hashed, not raw
+        self.assertNotIn("98765", row[1])
+        self.assertEqual(row[3], None)  # withdrawal_ts stays empty
+        self.assertEqual(row[4], 1762800000)
+        self.assertEqual(row[5], "proof")
+        self.assertEqual(row[6], None)
+
+    def test_map_dlt_row_accepts_both_header_spellings(self) -> None:
+        from hydrate_and_verify import map_dlt_row
+
+        new_style = map_dlt_row(
+            {
+                "declaration_id": "D1",
+                "cli_e164": "+911600412900",
+                "operator_name": "JIO",
+                "series_type": "160_SERVICE_BFSI",
+                "a2p_voice_declared": "1",
+                "status": "ACTIVE",
+                "valid_from_ts": "1758153600",
+                "valid_to_ts": "1789689600",
+            }
+        )
+        self.assertEqual(new_style[0], "D1")
+        self.assertEqual(new_style[2], "JIO")
+        self.assertEqual(new_style[3], "160_SERVICE_BFSI")
+        self.assertEqual(new_style[4], 1)
+        self.assertEqual(new_style[5], "ACTIVE")
+
+        old_style = map_dlt_row(
+            {
+                "declaration_id": "D1",
+                "cli_e164": "+911600412900",
+                "operator": "JIO",
+                "series": "160_SERVICE_BFSI",
+                "status": 1,
+                "dlt_status": "ACTIVE",
+                "valid_from": 1758153600,
+                "valid_to": 1789689600,
+            }
+        )
+        self.assertEqual(old_style, new_style)
+
+    def test_map_cdr_row_parses_naive_ist_and_hashes(self) -> None:
+        from hydrate_and_verify import map_cdr_row
+
+        row = map_cdr_row(
+            {
+                "call_sid": "exo_1",
+                "cli_e164": "+911600412900",
+                "recipient_phone": "+919876543210",
+                "call_intent": "INQUIRY_FOLLOWUP",
+                "call_ts": "2026-11-12 20:59:30",
+                "duration_sec": "45",
+                "ucc_complaint_filed": "0",
+                "complainant_phone": "",
+                "operator_ml_flag": "0",
+            },
+            secret_key="sec",
+        )
+        self.assertEqual(row[0], "exo_1")
+        self.assertEqual(row[4], 1794497370)  # parsed as IST
+        self.assertEqual(len(row[2]), 64)
+        self.assertIsNone(row[7])  # no complainant -> NULL
