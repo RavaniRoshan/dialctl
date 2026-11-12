@@ -223,41 +223,112 @@ def compute_attestation_hash(prev_hash: str, payload: dict) -> str:
     return hashlib.sha256(f"{prev_hash}|{canonical}".encode()).hexdigest()
 
 
-def evaluate_pre_dial(
+def load_call_facts(
     conn: sqlite3.Connection,
-    call_sid: str,
     cli_e164: str,
     recipient_hmac: str,
     call_intent: str,
     call_ts: int,
-    seq_no: int,
-    prev_hash: str,
 ) -> dict:
+    """Collect everything the rules need for one call, as plain data.
+
+    This is the I/O adapter at the seam: it runs the SQL and returns dicts, so
+    the rule module itself never sees a connection or a tuple position.
+    """
+    declarations = [
+        {
+            "declaration_id": row[0],
+            "series": row[1],
+            "status": row[2],
+            "dlt_status": row[3],
+            "valid_from": row[4],
+            "valid_to": row[5],
+        }
+        for row in conn.execute(
+            """
+            SELECT declaration_id, series, status, dlt_status, valid_from, valid_to
+            FROM dlt_declarations
+            WHERE cli_e164 = ?
+            """,
+            (cli_e164,),
+        ).fetchall()
+    ]
+
+    consents = [
+        {
+            "consent_id": row[0],
+            "dnd_robo_block": row[1],
+            "withdrawal_ts": row[2],
+            "inquiry_verified_ts": row[3],
+            "inquiry_artifact_sha256": row[4],
+            "revoked_ts": row[5],
+        }
+        for row in conn.execute(
+            """
+            SELECT consent_id, consent_flag, withdrawal_ts, inquiry_verified_ts,
+                   inquiry_artifact_sha256, revoked_ts
+            FROM consent_ledger
+            WHERE recipient_hmac = ?
+            """,
+            (recipient_hmac,),
+        ).fetchall()
+    ]
+
+    complaint_row = conn.execute(
+        """
+        SELECT COUNT(DISTINCT complainant_hmac), COALESCE(SUM(operator_ml_flag), 0)
+        FROM cdr_events
+        WHERE cli_e164 = ?
+          AND call_ts >= ?
+          AND call_ts <= ?
+          AND complaint_flag = 1
+        """,
+        (cli_e164, call_ts - TEN_DAYS_SEC, call_ts),
+    ).fetchone()
+
+    return {
+        "cli_e164": cli_e164,
+        "call_intent": call_intent,
+        "call_ts": call_ts,
+        "declarations": declarations,
+        "consents": consents,
+        "complaints_10d": {
+            "distinct": complaint_row[0] if complaint_row else 0,
+            "ml_flags": complaint_row[1] if complaint_row else 0,
+        },
+    }
+
+
+def evaluate_rules(facts: dict) -> dict:
+    """Apply R1–R6 to pre-fetched facts. Pure: no I/O, no chain mechanics.
+
+    Returns the decision fields only — `decision`, `failed_rules`, and the
+    matched declaration/consent/inquiry details. The caller attaches the
+    attestation envelope.
+    """
+    cli_e164 = facts["cli_e164"]
+    call_intent = facts["call_intent"]
+    call_ts = facts["call_ts"]
+    declarations = facts["declarations"]
+    consents = facts["consents"]
+    complaints = facts["complaints_10d"]
+
     failed_rules: list[str] = []
     declaration_id = None
     consent_id = None
     inquiry_age_sec = None
 
     # R1_CLI_DECLARED
-    decl_rows = conn.execute(
-        """
-        SELECT declaration_id, series, status, dlt_status, valid_from, valid_to
-        FROM dlt_declarations
-        WHERE cli_e164 = ?
-        """,
-        (cli_e164,),
-    ).fetchall()
     matched_decl = None
-    for row in decl_rows:
-        did, _series, status, dlt_status, valid_from, valid_to = row
-        active = (status == 1) or (dlt_status == "ACTIVE")
-        if active and valid_from <= call_ts <= valid_to:
-            matched_decl = row
+    for decl in declarations:
+        active = (decl["status"] == 1) or (decl["dlt_status"] == "ACTIVE")
+        if active and decl["valid_from"] <= call_ts <= decl["valid_to"]:
+            matched_decl = decl
             break
     if matched_decl is None:
         failed_rules.append("R1_CLI_DECLARED")
     else:
-        declaration_id = matched_decl[0]
+        declaration_id = matched_decl["declaration_id"]
 
     # R2_140_160_SERIES
     if call_intent == "PROMOTIONAL":
@@ -269,63 +340,52 @@ def evaluate_pre_dial(
     else:
         failed_rules.append("R2_140_160_SERIES")
 
-    # Consent rows for recipient
-    consent_rows = conn.execute(
-        """
-        SELECT consent_id, consent_flag, withdrawal_ts, inquiry_verified_ts,
-               inquiry_artifact_sha256, revoked_ts
-        FROM consent_ledger
-        WHERE recipient_hmac = ?
-        """,
-        (recipient_hmac,),
-    ).fetchall()
-
     # R3_ROBO_DND_MODE: block when consent is absent, the recipient enabled the
     # robo-call DND block, or consent was revoked.
-    # consent_row = (consent_id, dnd_robo_block, withdrawal_ts, inquiry_verified_ts,
-    #                inquiry_artifact_sha256, revoked_ts)
-    consent_row = consent_rows[0] if consent_rows else None
-    if not consent_row or consent_row[1] == 1 or consent_row[5] is not None:
+    consent_row = consents[0] if consents else None
+    if (
+        not consent_row
+        or consent_row["dnd_robo_block"] == 1
+        or consent_row["revoked_ts"] is not None
+    ):
         failed_rules.append("R3_ROBO_DND_MODE")
 
-    # R4_7DAY_INQUIRY and consent/inquiry fields
+    # R4_7DAY_INQUIRY and consent/inquiry reporting
     if call_intent == "INQUIRY_FOLLOWUP":
         r4_ok = False
         best_consent = None
-        # Prefer a consent row that satisfies R4
-        for c in consent_rows:
-            cid, _cf, _wts, ivt, artifact, _rts = c
+        for c in consents:
+            ivt = c["inquiry_verified_ts"]
+            artifact = c["inquiry_artifact_sha256"]
             if ivt is not None and artifact is not None:
                 age = int(call_ts - ivt)
                 if 0 <= age <= SEVEN_DAYS_SEC:
                     r4_ok = True
                     best_consent = c
                     inquiry_age_sec = age
-                    consent_id = cid
+                    consent_id = c["consent_id"]
                     break
         if not r4_ok:
             failed_rules.append("R4_7DAY_INQUIRY")
-            # Best-effort reporting: pick a consent with inquiry data/age if present
-            for c in consent_rows:
-                cid, _cf, _wts, ivt, artifact, _rts = c
-                if ivt is not None and artifact is not None:
+            for c in consents:
+                ivt = c["inquiry_verified_ts"]
+                if c["inquiry_artifact_sha256"] is not None and ivt is not None:
                     inquiry_age_sec = int(call_ts - ivt)
-                    consent_id = cid
+                    consent_id = c["consent_id"]
                     best_consent = c
                     break
             if best_consent is None:
-                for c in consent_rows:
-                    cid, _cf, _wts, ivt, _artifact, _rts = c
-                    if ivt is not None:
-                        inquiry_age_sec = int(call_ts - ivt)
-                        consent_id = cid
+                for c in consents:
+                    if c["inquiry_verified_ts"] is not None:
+                        inquiry_age_sec = int(call_ts - c["inquiry_verified_ts"])
+                        consent_id = c["consent_id"]
                         best_consent = c
                         break
-            if best_consent is None and consent_rows:
-                consent_id = consent_rows[0][0]
+            if best_consent is None and consents:
+                consent_id = consents[0]["consent_id"]
     else:
-        if consent_rows:
-            consent_id = consent_rows[0][0]
+        if consents:
+            consent_id = consents[0]["consent_id"]
 
     # R5_CALL_WINDOW
     ist_sec_of_day = (call_ts + 19800) % 86400
@@ -333,24 +393,38 @@ def evaluate_pre_dial(
         failed_rules.append("R5_CALL_WINDOW")
 
     # R6_10DAY_CLUSTER
-    window_start = call_ts - TEN_DAYS_SEC
-    row = conn.execute(
-        """
-        SELECT COUNT(DISTINCT complainant_hmac), COALESCE(SUM(operator_ml_flag), 0)
-        FROM cdr_events
-        WHERE cli_e164 = ?
-          AND call_ts >= ?
-          AND call_ts <= ?
-          AND complaint_flag = 1
-        """,
-        (cli_e164, window_start, call_ts),
-    ).fetchone()
-    distinct = row[0] if row else 0
-    ml = row[1] if row else 0
+    distinct = complaints["distinct"]
+    ml = complaints["ml_flags"]
     if distinct >= 3 or (distinct >= 2 and ml >= 1):
         failed_rules.append("R6_10DAY_CLUSTER")
 
-    decision = "ALLOW" if not failed_rules else "BLOCK"
+    return {
+        "decision": "ALLOW" if not failed_rules else "BLOCK",
+        "failed_rules": failed_rules,
+        "inquiry_age_sec": inquiry_age_sec,
+        "declaration_id": declaration_id,
+        "consent_id": consent_id,
+    }
+
+
+def evaluate_pre_dial(
+    conn: sqlite3.Connection,
+    call_sid: str,
+    cli_e164: str,
+    recipient_hmac: str,
+    call_intent: str,
+    call_ts: int,
+    seq_no: int,
+    prev_hash: str,
+) -> dict:
+    """Decide one call and wrap the decision in the attestation envelope.
+
+    The rule logic lives in `evaluate_rules` over facts from `load_call_facts`;
+    this function only composes the two and appends the hash-chained record.
+    """
+    facts = load_call_facts(conn, cli_e164, recipient_hmac, call_intent, call_ts)
+    decision = evaluate_rules(facts)
+
     record = {
         "seq_no": seq_no,
         "call_sid": call_sid,
@@ -358,11 +432,11 @@ def evaluate_pre_dial(
         "cli_e164": cli_e164,
         "recipient_hmac": recipient_hmac,
         "call_intent": call_intent,
-        "decision": decision,
-        "failed_rules": failed_rules,
-        "inquiry_age_sec": inquiry_age_sec,
-        "declaration_id": declaration_id,
-        "consent_id": consent_id,
+        "decision": decision["decision"],
+        "failed_rules": decision["failed_rules"],
+        "inquiry_age_sec": decision["inquiry_age_sec"],
+        "declaration_id": decision["declaration_id"],
+        "consent_id": decision["consent_id"],
         "prev_hash": prev_hash,
     }
     record["attestation_hash"] = compute_attestation_hash(prev_hash, record)
