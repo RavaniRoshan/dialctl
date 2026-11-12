@@ -343,3 +343,23 @@ def evaluate_pre_dial(
     record["attestation_hash"] = compute_attestation_hash(prev_hash, record)
     return record
 
+
+def verify_hash_chain(records: list[dict]) -> tuple[bool, str]:
+    expected_prev = GENESIS_HASH
+    for i, row in enumerate(records):
+        if row["seq_no"] != i + 1:
+            return (False, f"Sequence gap at row {i + 1}")
+        if row["prev_hash"] != expected_prev:
+            return (False, f"Previous-hash mismatch at row {i + 1}")
+        recomputed = compute_attestation_hash(row["prev_hash"], row)
+        if recomputed != row["attestation_hash"]:
+            return (False, f"Payload tamper detected at seq_no={row['seq_no']}")
+        expected_prev = row["attestation_hash"]
+    return (True, "OK")
+
+
+def export_attestations_jsonl(records: list[dict], out_path: str) -> None:
+    with open(out_path, "w", encoding="utf-8") as f:
+        for record in records:
+            f.write(json.dumps(record, sort_keys=True, separators=(",", ":")) + "\n")
+
