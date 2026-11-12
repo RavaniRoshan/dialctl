@@ -143,7 +143,7 @@ compute_termination_exposure_inr(durations_sec) =
 ### 5.2 CLI risk score
 
 ```
-complaint_term = 100 * (1 - 2 ** (-unique_complaints_10d))
+complaint_term = 62.5 * (1.4 ** unique_complaints_10d - 1)
 score = min(100.0, round(
     complaint_term
     + 15 * undeclared_calls
@@ -151,6 +151,11 @@ score = min(100.0, round(
     +  5 * expired_inquiry_calls_10d
 , 2))
 ```
+
+The complaint term is pinned by the values below: with linear weights
+`15/10/5`, the two non-zero pins force `a*(r**1 - 1) = 25` and
+`a*(r**2 - 1) = 60`, giving `r = 1.4` and `a = 62.5`. The term is 0 at 0
+complaints, 25 at 1, 60 at 2, and saturates via the outer `min(100.0, ...)`.
 
 Pinned values:
 
