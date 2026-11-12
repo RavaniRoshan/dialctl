@@ -629,12 +629,19 @@ def main(argv=None) -> int:
     group.add_argument("--self-test", action="store_true", dest="self_test")
     group.add_argument("--smoke-test", action="store_true", dest="smoke_test")
     group.add_argument("--benchmark", action="store_true", dest="benchmark")
+    parser.add_argument(
+        "--limit",
+        type=int,
+        default=200,
+        dest="limit",
+        help="row count for --smoke-test (default: 200)",
+    )
     args = parser.parse_args(argv)
 
     if args.smoke_test:
         with tempfile.TemporaryDirectory() as td:
             out_path = os.path.join(td, "smoke.jsonl")
-            summary = run_smoke_test(limit=200, out_path=out_path)
+            summary = run_smoke_test(limit=args.limit, out_path=out_path)
         print(json.dumps(summary, sort_keys=True))
         return 0
 
