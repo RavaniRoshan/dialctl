@@ -344,8 +344,6 @@ kbd { background: #22303d; border: 1px solid var(--border); border-bottom-width:
           cli,
           events: [],
           undeclared: 0,
-          complainantSet: new Set(),
-          mlFlags10d: 0,
           expiredInquiryCalls: 0,
           durations: [],
           failedRulesCounts: {},
@@ -358,11 +356,6 @@ kbd { background: #22303d; border: 1px solid var(--border); border-bottom-width:
       agg.events.push(ev);
       const dur = Number(ev.duration_sec || 0);
       agg.durations.push(dur);
-      if (Number(ev.operator_ml_flag) === 1) agg.mlFlags10d += 1;
-      if (Number(ev.complaint_flag) === 1) {
-        const ch = ev.complainant_hmac || ev.complainant_phone || ('anon_' + agg.events.length);
-        agg.complainantSet.add(ch);
-      }
 
       // Evaluate rules per event (lightweight mirror)
       const dlt = dltByCli.get(cli);
@@ -409,7 +402,9 @@ kbd { background: #22303d; border: 1px solid var(--border); border-bottom-width:
       // R5_CALL_WINDOW
       const sod = istSecOfDay(ts);
       if (sod < 32400 || sod > 75600) failed.push('R5_CALL_WINDOW');
-      // R6_10DAY_CLUSTER evaluated at CLI aggregate level below; per-event we just count inputs
+      // R6_10DAY_CLUSTER: complaint/ML inputs are counted in a second pass over
+      // agg.events within the rolling 864000s window [maxTs - R6_WINDOW_SEC, maxTs]
+      // after each CLI's maxTs is known (maxTs is finalized only after all events).
 
       for (const r of failed) agg.failedRulesCounts[r] = (agg.failedRulesCounts[r] || 0) + 1;
       if (failed.includes('R1_CLI_DECLARED') || failed.includes('R2_140_160_SERIES')) agg.undeclared += 1;
@@ -417,17 +412,32 @@ kbd { background: #22303d; border: 1px solid var(--border); border-bottom-width:
 
     const records = [];
     for (const [cli, agg] of byCli.entries()) {
-      const complaints = agg.complainantSet.size;
-      // R6 cluster: trip when distinct >= 3 OR (distinct >= 2 and ml >= 1) within 864000s window
-      const r6Trip = (complaints >= 3) || (complaints >= 2 && agg.mlFlags10d >= 1);
-      const risk = computeRiskScore(complaints, agg.undeclared, agg.mlFlags10d, agg.expiredInquiryCalls);
+      // R6_10DAY_CLUSTER: rolling 864000s window ending at this CLI's maxTs (inclusive).
+      const windowEnd = agg.maxTs;
+      const windowStart = windowEnd - R6_WINDOW_SEC;
+      const complainantSet = new Set();
+      let mlFlags10d = 0;
+      for (let i = 0; i < agg.events.length; i++) {
+        const ev = agg.events[i];
+        const ts = Number(ev.call_ts || ev.timestamp || now);
+        if (ts < windowStart || ts > windowEnd) continue;
+        if (Number(ev.operator_ml_flag) === 1) mlFlags10d += 1;
+        if (Number(ev.complaint_flag) === 1) {
+          const ch = ev.complainant_hmac || ev.complainant_phone || ('anon_' + i);
+          complainantSet.add(ch);
+        }
+      }
+      const complaints = complainantSet.size;
+      // R6 trip when distinct complainants >= 3, or >= 2 with an ML flag, within [maxTs - R6_WINDOW_SEC, maxTs].
+      const r6Trip = (complaints >= 3) || (complaints >= 2 && mlFlags10d >= 1);
+      const risk = computeRiskScore(complaints, agg.undeclared, mlFlags10d, agg.expiredInquiryCalls);
       const exposure = terminationExposureInr(agg.durations);
       const rec = {
         cli,
         undeclared: agg.undeclared,
         complaints,
         complaintProgress: complaints + '/3',
-        mlFlags10d: agg.mlFlags10d,
+        mlFlags10d: mlFlags10d,
         expiredInquiryCalls: agg.expiredInquiryCalls,
         risk,
         exposure,
