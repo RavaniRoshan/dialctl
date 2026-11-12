@@ -2,6 +2,7 @@ import json
 import sqlite3
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 
 from hydrate_and_verify import (
     GENESIS_HASH,
@@ -146,6 +147,19 @@ class _ComplianceHandler(BaseHTTPRequestHandler):
         self.send_error(404)
 
     def do_GET(self):
+        if self.path in ("/", "/index.html"):
+            index_path = Path(__file__).resolve().parent / "web" / "index.html"
+            try:
+                body = index_path.read_bytes()
+            except OSError:
+                self.send_error(500, "index.html unavailable")
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
         if self.path == "/v1/cli/healthy":
             rows = select_healthy_clis(self.state.conn, None)
             self._send_json(200, rows)

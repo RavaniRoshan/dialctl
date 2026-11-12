@@ -1,6 +1,9 @@
 import concurrent.futures
+import threading
 import time
 import unittest
+import urllib.request
+from http.server import ThreadingHTTPServer
 
 from hydrate_and_verify import verify_hash_chain
 from middleware import ComplianceBlockError, SarvamExotelComplianceMiddleware
@@ -84,6 +87,25 @@ class TestWebhook(unittest.TestCase):
         self.assertIn("error", body)
         self.assertEqual(self.state.seq_no, initial_seq)
         self.assertEqual(self.state.last_attestation_hash, initial_hash)
+
+    def test_get_root_serves_ui_html(self) -> None:
+        from server import _ComplianceHandler
+
+        _ComplianceHandler.state = self.state
+        httpd = ThreadingHTTPServer(("127.0.0.1", 0), _ComplianceHandler)
+        port = httpd.server_address[1]
+        thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+        thread.start()
+        try:
+            with urllib.request.urlopen(f"http://127.0.0.1:{port}/", timeout=5) as resp:
+                self.assertEqual(resp.status, 200)
+                self.assertIn("text/html", resp.headers.get("Content-Type", ""))
+                body = resp.read().decode("utf-8")
+        finally:
+            httpd.shutdown()
+            httpd.server_close()
+        self.assertIn("trai_a2p_audit_v1", body)
+        self.assertIn("sha256FallbackHex", body)
 
 
 if __name__ == "__main__":
