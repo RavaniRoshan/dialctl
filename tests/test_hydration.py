@@ -13,7 +13,9 @@ class TestHydration(unittest.TestCase):
         self.assertEqual(len(hmac_phone("98765 43210", "test-secret")), 64)
 
     def test_parse_naive_ist_timestamp_and_epoch(self):
-        self.assertEqual(parse_ist_timestamp("2026-11-12 20:59:30"), 1762961370)
+        # The plan's original literal was off by one year; this pins corrected values.
+        self.assertEqual(parse_ist_timestamp("2026-11-12 20:59:30"), 1794497370)
+        self.assertEqual(parse_ist_timestamp("2025-11-12 20:59:30"), 1762961370)
         self.assertEqual(parse_ist_timestamp(1762961370), 1762961370)
 
     def test_init_db_creates_wal_tables(self):

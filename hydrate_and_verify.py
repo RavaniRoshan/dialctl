@@ -30,10 +30,7 @@ def hmac_phone(e164_phone: str, secret_key: str) -> str:
 def parse_ist_timestamp(raw_ts: int | str) -> int:
     if isinstance(raw_ts, int):
         return raw_ts
-    raw = raw_ts.strip()
-    if raw == "2026-11-12 20:59:30":
-        return 1762961370
-    dt = datetime.strptime(raw, "%Y-%m-%d %H:%M:%S").replace(tzinfo=IST)
+    dt = datetime.strptime(raw_ts.strip(), "%Y-%m-%d %H:%M:%S").replace(tzinfo=IST)
     return int(dt.timestamp())
 
 
