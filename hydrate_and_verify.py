@@ -192,7 +192,9 @@ def hydrate_csv_tables(
                 _pick(row, "consent_id"),
                 recipient_hmac,
                 _opt_int(_pick(row, "dnd_robo_block", "consent_flag")),
-                _opt_int(_pick(row, "withdrawal_ts", "explicit_consent_ts")),
+                # explicit_consent_ts is when consent was GIVEN, not withdrawn;
+                # it must never populate withdrawal_ts or revoked_ts.
+                _opt_int(row.get("withdrawal_ts")),
                 _opt_int(row.get("inquiry_verified_ts")),
                 _opt_text(row.get("inquiry_artifact_sha256")),
                 _opt_int(row.get("revoked_ts")),

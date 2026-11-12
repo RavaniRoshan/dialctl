@@ -90,5 +90,52 @@ class TestHydration(unittest.TestCase):
             self.assertTrue(ok)
 
 
+    def test_explicit_consent_ts_is_not_treated_as_revocation(self) -> None:
+        import tempfile
+        from hydrate_and_verify import (
+            GENESIS_HASH,
+            evaluate_pre_dial,
+            hmac_phone,
+            hydrate_csv_tables,
+        )
+
+        conn = sqlite3.connect(":memory:")
+        init_db(conn)
+        with tempfile.TemporaryDirectory() as tmp:
+            dlt_p = f"{tmp}/dlt.csv"
+            cns_p = f"{tmp}/cns.csv"
+            cdr_p = f"{tmp}/cdr.csv"
+            with open(dlt_p, "w", encoding="utf-8") as f:
+                f.write("declaration_id,cli_e164,operator,series,status,dlt_status,valid_from,valid_to\n")
+                f.write("DLT-1,+911600412900,JIO,160_SERVICE_BFSI,1,ACTIVE,1758153600,1789689600\n")
+            with open(cns_p, "w", encoding="utf-8") as f:
+                f.write("consent_id,recipient_phone,dnd_robo_block,explicit_consent_ts,inquiry_verified_ts,inquiry_artifact_sha256,revoked_ts\n")
+                f.write("CNS-1,+919876543210,0,1762000000,1762800000,proof_hash,\n")
+            with open(cdr_p, "w", encoding="utf-8") as f:
+                f.write("event_id,cli_e164,recipient_phone,call_intent,call_ts,duration_sec,complaint_flag,complainant_phone,operator_ml_flag\n")
+                f.write("cdr_1,+911600412900,+919876543210,INQUIRY_FOLLOWUP,1762936200,45,0,,0\n")
+
+            hydrate_csv_tables(conn, dlt_p, cns_p, cdr_p, secret_key="sec")
+
+            # explicit_consent_ts must not leak into withdrawal_ts or revoked_ts.
+            cns_row = conn.execute(
+                "SELECT withdrawal_ts, revoked_ts FROM consent_ledger WHERE consent_id = 'CNS-1'"
+            ).fetchone()
+            self.assertEqual(cns_row, (None, None))
+
+            rec = evaluate_pre_dial(
+                conn,
+                "c_consent",
+                "+911600412900",
+                hmac_phone("+919876543210", "sec"),
+                "INQUIRY_FOLLOWUP",
+                1762936200,
+                1,
+                GENESIS_HASH,
+            )
+            self.assertEqual(rec["decision"], "ALLOW")
+            self.assertNotIn("R3_ROBO_DND_MODE", rec["failed_rules"])
+
+
 if __name__ == "__main__":
     unittest.main()
