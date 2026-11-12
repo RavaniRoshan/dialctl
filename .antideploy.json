@@ -1,0 +1,11 @@
+{
+  "applicationId": "75726f5e-c69d-4195-86a3-d33632a338c8",
+  "name": "dialctl-docs",
+  "subdomain": "dialctl-docs",
+  "url": "https://dialctl-docs.antideploy.app",
+  "rootDirectory": "docs-site",
+  "build": {
+    "command": "npx blume build",
+    "output": "docs-site/dist"
+  }
+}
