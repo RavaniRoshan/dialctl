@@ -21,6 +21,35 @@ class ComplianceGateState:
         self.last_attestation_hash = last_attestation_hash
         self._lock = threading.Lock()
 
+    def decide(self, payload):
+        """Validate, evaluate, and append to the chain in one place.
+
+        The sequence number and hash linkage are an invariant of this object,
+        so they are owned here rather than by each caller. Returns the record
+        dict on success, or `{"seq_no": 0, "error": ...}` when the payload is
+        rejected — in which case nothing is mutated.
+        """
+        error = validate_payload(payload)
+        if error is not None:
+            return {"seq_no": 0, "error": error}
+
+        recipient_hmac = hmac_phone(payload["customer_phone"], self.secret_key)
+
+        with self._lock:
+            self.seq_no += 1
+            record = evaluate_pre_dial(
+                self.conn,
+                payload["call_sid"],
+                payload["cli_e164"],
+                recipient_hmac,
+                payload["call_intent"],
+                payload["call_ts"],
+                self.seq_no,
+                self.last_attestation_hash,
+            )
+            self.last_attestation_hash = record["attestation_hash"]
+        return record
+
     @classmethod
     def create_with_sample_fixture(cls, secret_key):
         conn = sqlite3.connect(":memory:", check_same_thread=False)
@@ -80,34 +109,9 @@ def validate_payload(payload) -> str | None:
 
 
 def handle_pre_dial_payload(state, payload):
-    error = validate_payload(payload)
-    if error is not None:
-        return (400, {"error": error})
-
-    call_sid = payload["call_sid"]
-    cli_e164 = payload["cli_e164"]
-    customer_phone = payload["customer_phone"]
-    call_intent = payload["call_intent"]
-    call_ts = payload["call_ts"]
-
-    recipient_hmac = hmac_phone(customer_phone, state.secret_key)
-
-    with state._lock:
-        state.seq_no += 1
-        seq_no = state.seq_no
-        prev_hash = state.last_attestation_hash
-        record = evaluate_pre_dial(
-            state.conn,
-            call_sid,
-            cli_e164,
-            recipient_hmac,
-            call_intent,
-            call_ts,
-            seq_no,
-            prev_hash,
-        )
-        state.last_attestation_hash = record["attestation_hash"]
-
+    record = state.decide(payload)
+    if record.get("seq_no") == 0 and "error" in record:
+        return (400, {"error": record["error"]})
     status = 200 if record["decision"] == "ALLOW" else 403
     return (status, record)
 

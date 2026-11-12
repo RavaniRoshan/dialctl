@@ -147,3 +147,46 @@ class TestWebhook(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestChainOwnership(unittest.TestCase):
+    """The sequence and hash chain are an invariant of the state object, not
+    something each caller re-implements. The state exposes one decide() that
+    locks, evaluates, and appends; callers cannot forget a step."""
+
+    def setUp(self):
+        self.state = ComplianceGateState.create_with_sample_fixture(secret_key="test-secret")
+
+    def test_decide_advances_the_chain(self):
+        payload = {
+            "call_sid": "c1",
+            "cli_e164": "+911600412900",
+            "customer_phone": "+919876543210",
+            "call_intent": "INQUIRY_FOLLOWUP",
+            "call_ts": 1762936200,
+        }
+        rec = self.state.decide(payload)
+        self.assertEqual(rec["seq_no"], 1)
+        self.assertEqual(self.state.seq_no, 1)
+        self.assertEqual(self.state.last_attestation_hash, rec["attestation_hash"])
+
+        rec2 = self.state.decide(dict(payload, call_sid="c2"))
+        self.assertEqual(rec2["seq_no"], 2)
+        self.assertEqual(rec2["prev_hash"], rec["attestation_hash"])
+
+    def test_decide_returns_a_valid_chain(self):
+        payload = {
+            "call_sid": "c1",
+            "cli_e164": "+911600412900",
+            "customer_phone": "+919876543210",
+            "call_intent": "INQUIRY_FOLLOWUP",
+            "call_ts": 1762936200,
+        }
+        records = [self.state.decide(dict(payload, call_sid=f"c{i}")) for i in range(5)]
+        self.assertEqual(verify_hash_chain(records), (True, "OK"))
+
+    def test_decide_does_not_mutate_on_invalid_payload(self):
+        before = (self.state.seq_no, self.state.last_attestation_hash)
+        rec = self.state.decide({"call_sid": "bad"})
+        self.assertEqual(rec["seq_no"], 0)  # untouched, not a real record
+        self.assertEqual((self.state.seq_no, self.state.last_attestation_hash), before)
