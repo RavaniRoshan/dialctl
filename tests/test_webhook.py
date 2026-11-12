@@ -1,11 +1,12 @@
 import concurrent.futures
+import sqlite3
 import threading
 import time
 import unittest
 import urllib.request
 from http.server import ThreadingHTTPServer
 
-from hydrate_and_verify import verify_hash_chain
+from hydrate_and_verify import init_db, verify_hash_chain
 from middleware import ComplianceBlockError, SarvamExotelComplianceMiddleware
 from server import ComplianceGateState, handle_pre_dial_payload
 
@@ -106,6 +107,42 @@ class TestWebhook(unittest.TestCase):
             httpd.server_close()
         self.assertIn("trai_a2p_audit_v1", body)
         self.assertIn("sha256FallbackHex", body)
+
+
+    def test_get_healthy_clis_endpoint_shape_and_no_cli_registry(self) -> None:
+        import json
+        import urllib.request
+        from server import _ComplianceHandler
+
+        # No dead cli_registry table may exist in the schema.
+        conn = sqlite3.connect(":memory:")
+        init_db(conn)
+        tables = {
+            row[0]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+        }
+        self.assertNotIn("cli_registry", tables)
+
+        _ComplianceHandler.state = self.state
+        httpd = ThreadingHTTPServer(("127.0.0.1", 0), _ComplianceHandler)
+        port = httpd.server_address[1]
+        thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+        thread.start()
+        try:
+            with urllib.request.urlopen(
+                f"http://127.0.0.1:{port}/v1/cli/healthy?now_ts=1762936200", timeout=5
+            ) as resp:
+                self.assertEqual(resp.status, 200)
+                payload = json.loads(resp.read().decode("utf-8"))
+        finally:
+            httpd.shutdown()
+            httpd.server_close()
+
+        self.assertIsInstance(payload, dict)
+        self.assertIn("healthy_clis", payload)
+        self.assertIsInstance(payload["healthy_clis"], list)
 
 
 if __name__ == "__main__":

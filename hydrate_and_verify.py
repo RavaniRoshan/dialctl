@@ -89,19 +89,6 @@ def init_db(conn: sqlite3.Connection) -> None:
         )
         """
     )
-    conn.execute(
-        """
-        CREATE TABLE cli_registry (
-            cli_e164 TEXT PRIMARY KEY,
-            status TEXT,
-            a2p_voice_declared INTEGER,
-            compliant_attestation_count INTEGER,
-            undeclared_call_count_10d INTEGER,
-            unique_complaints_10d INTEGER,
-            operator_ml_flags_10d INTEGER
-        )
-        """
-    )
     conn.execute("CREATE INDEX idx_cdr_cli_ts ON cdr_events(cli_e164, call_ts)")
     conn.execute("CREATE INDEX idx_consent_hmac ON consent_ledger(recipient_hmac)")
     conn.execute("CREATE INDEX idx_dlt_cli ON dlt_declarations(cli_e164)")

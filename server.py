@@ -56,12 +56,6 @@ class ComplianceGateState:
             ),
         )
 
-        # Healthy CLI row for /v1/cli/healthy consistency
-        conn.execute(
-            "INSERT INTO cli_registry VALUES (?, ?, ?, ?, ?, ?, ?)",
-            ("+911600412900", "ACTIVE", 1, 1, 0, 0, 0),
-        )
-
         conn.commit()
         return cls(conn=conn, secret_key=secret_key)
 
@@ -160,9 +154,20 @@ class _ComplianceHandler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(body)
             return
-        if self.path == "/v1/cli/healthy":
-            rows = select_healthy_clis(self.state.conn, None)
-            self._send_json(200, rows)
+        if self.path.startswith("/v1/cli/healthy"):
+            from urllib.parse import parse_qs, urlparse
+
+            parsed = urlparse(self.path)
+            now_ts = None
+            raw = parse_qs(parsed.query).get("now_ts", [None])[0]
+            if raw is not None:
+                try:
+                    now_ts = int(raw)
+                except ValueError:
+                    self._send_json(400, {"error": "now_ts must be an integer"})
+                    return
+            healthy = select_healthy_clis(self.state.conn, now_ts)
+            self._send_json(200, {"healthy_clis": healthy})
             return
         self.send_error(404)
 

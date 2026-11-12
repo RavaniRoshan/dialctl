@@ -29,7 +29,7 @@ class TestHydration(unittest.TestCase):
         }
         self.assertEqual(
             tables,
-            {"dlt_declarations", "consent_ledger", "cdr_events", "cli_registry"},
+            {"dlt_declarations", "consent_ledger", "cdr_events"},
         )
 
 

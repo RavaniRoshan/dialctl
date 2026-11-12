@@ -49,7 +49,12 @@ class TestScoring(unittest.TestCase):
         self.assertEqual([row["cli_e164"] for row in healthy], ["+911600412900"])
 
     def test_run_smoke_test(self):
-        result = run_smoke_test(200, "/tmp/smoke_test_audit.jsonl")
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out = str(Path(tmp) / "smoke_test_audit.jsonl")
+            result = run_smoke_test(200, out)
         self.assertEqual(result["rows_evaluated"], 200)
         self.assertEqual(result["rule_precision"], 1.0)
 
