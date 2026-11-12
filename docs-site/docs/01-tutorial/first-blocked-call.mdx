@@ -1,0 +1,156 @@
+---
+title: Your first blocked call
+description: Install dialctl, run the self-test, and watch the six rules decide a call — including the exact boundary second where a valid call turns into a blocked one.
+sidebar:
+  label: Your first blocked call
+---
+
+In this tutorial you will run dialctl's engine directly, with no server and no
+network, and watch it allow one call and block another. The whole thing takes
+about two minutes and needs only Python 3.12.
+
+By the end you will have seen the six rules fire, and you will understand the
+one-second boundaries that decide an A2P call.
+
+## Before you start
+
+- **Python 3.12** on your PATH (`python3 --version`).
+- The dialctl source. Clone it, or copy `hydrate_and_verify.py` next to you:
+
+```bash
+git clone https://github.com/RavaniRoshan/dialctl
+cd dialctl
+```
+
+There is nothing to install. dialctl's engine uses only the Python standard
+library.
+
+## Step 1: Confirm the engine works
+
+Run the built-in self-test. It exercises a 200-row smoke run and then re-reads
+the exported ledger to confirm the hash chain is intact:
+
+```bash
+python3 hydrate_and_verify.py --self-test
+```
+
+You should see:
+
+```txt
+PASS: self-test smoke=200 precision=1.0 chain=OK
+```
+
+If you see `PASS`, the engine, the rules, and the ledger are all working.
+
+## Step 2: Seed a declaration and a consent record
+
+The engine reads three tables. Create an in-memory database and add one active
+DLT declaration and one consent record for a recipient.
+
+```python
+import sqlite3
+from hydrate_and_verify import init_db, hmac_phone
+
+conn = sqlite3.connect(":memory:")
+init_db(conn)
+
+# A declared, active calling line in the 160 service series.
+conn.execute(
+    "INSERT INTO dlt_declarations VALUES (?,?,?,?,?,?,?,?)",
+    ("DLT-JIO-01", "+911600412900", "JIO", "160_SERVICE_BFSI",
+     1, "ACTIVE", 1758153600, 1789689600),
+)
+
+# The recipient's number is HMAC-hashed, never stored raw.
+recipient = hmac_phone("+919876543210", "demo-secret")
+conn.execute(
+    "INSERT INTO consent_ledger VALUES (?,?,?,?,?,?,?)",
+    ("CNS-1", recipient, 0, None, 1762356600, "artifact_sha256_ok", None),
+)
+```
+
+Two things matter here. The phone number goes in as digits and comes out as a
+64-character digest — that is dialctl's PII rule. And the consent row carries a
+non-null `inquiry_verified_ts` with an artifact digest, which is what R4 checks.
+
+## Step 3: Allow a call at the exact boundary
+
+Now evaluate a call. The timestamp `1762961400` is 21:00:00 IST, and it lands
+exactly 604800 seconds (seven days) after the inquiry was verified:
+
+```python
+from hydrate_and_verify import evaluate_pre_dial, GENESIS_HASH
+
+rec = evaluate_pre_dial(
+    conn, "call_001", "+911600412900", recipient,
+    "INQUIRY_FOLLOWUP", 1762961400, 1, GENESIS_HASH,
+)
+print(rec["decision"], rec["failed_rules"])
+```
+
+```txt
+ALLOW []
+```
+
+Nothing failed. The declaration covers the timestamp (R1), the `160` series
+matches an inquiry follow-up (R2), consent is present and unrevoked (R3), the
+inquiry is exactly seven days old and artifact-backed (R4), and 21:00:00 IST is
+still inside the calling window (R5).
+
+## Step 4: Block the call one second later
+
+Change the timestamp to `1762961401` — one second later — and chain the record
+onto the previous hash:
+
+```python
+rec2 = evaluate_pre_dial(
+    conn, "call_002", "+911600412900", recipient,
+    "INQUIRY_FOLLOWUP", 1762961401, 2, rec["attestation_hash"],
+)
+print(rec2["decision"], rec2["failed_rules"])
+```
+
+```txt
+BLOCK ['R4_7DAY_INQUIRY', 'R5_CALL_WINDOW']
+```
+
+Two rules tripped at once. One second pushed the inquiry past seven days
+(`R4_7DAY_INQUIRY`) and pushed the clock past 21:00:00 IST (`R5_CALL_WINDOW`).
+Both boundaries are inclusive: the 604800th second is allowed, the 604801st is
+not.
+
+## Step 5: See the record that was written
+
+Every decision returns a record. The interesting fields are the decision, the
+list of failed rules, and the attestation hash:
+
+```python
+print(rec2["seq_no"], rec2["decision"], rec2["attestation_hash"][:16], "…")
+```
+
+```txt
+2 BLOCK 1ab8dbc59856f4d1 …
+```
+
+The hash covers the previous record's hash plus this record's canonical JSON. If
+anyone edits `decision` afterwards, recomputing the hash produces a different
+value and the chain check fails. That is the tamper-evidence property, and
+you will use it in the how-to guides.
+
+## What you just learned
+
+- The engine runs with no dependencies and no network.
+- Phone numbers are HMAC-hashed on the way in.
+- All six rules are evaluated on every call; every failure is collected.
+- The 7-day inquiry limit and the 21:00 IST cutoff are **inclusive** — the
+  boundary second is allowed, the next second is not.
+- Every decision is hash-chained.
+
+<CardGroup cols={2}>
+  <Card title="Run the pre-dial gate" href="/how-to/run-pre-dial-gate" icon="book">
+    Put the engine behind an HTTP webhook and wrap a dialler.
+  </Card>
+  <Card title="Why a local gate" href="/explanation/why-a-local-gate" icon="sparkles">
+    The reasoning behind determinism, privacy, and auditability.
+  </Card>
+</CardGroup>

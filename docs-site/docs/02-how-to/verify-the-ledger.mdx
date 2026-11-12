@@ -1,0 +1,117 @@
+---
+title: Verify the ledger
+description: Export the attestation ledger to JSONL, re-read it from disk, and detect a tampered decision or a skipped sequence number.
+sidebar:
+  label: Verify the ledger
+---
+
+Every decision dialctl makes is appended to a hash chain. This guide shows how
+to export that chain, re-read it from disk, and prove that nothing was altered.
+
+You will:
+
+1. Export a ledger to JSONL.
+2. Verify a clean chain.
+3. See what a tampered record and a sequence gap look like.
+
+## Export a chain
+
+`export_attestations_jsonl` writes one canonical JSON object per line:
+
+```python
+from hydrate_and_verify import export_attestations_jsonl
+
+export_attestations_jsonl(records, "attestations.jsonl")
+```
+
+Each line carries the decision, the failed rules, the previous hash, and the
+record's own `attestation_hash`:
+
+```json
+{"attestation_hash":"1ab8…","call_sid":"call_001","decision":"ALLOW","failed_rules":[],"prev_hash":"000…","seq_no":1}
+```
+
+## Verify it from disk
+
+Read the file back and hand it to `verify_hash_chain`:
+
+```python
+import json
+from hydrate_and_verify import verify_hash_chain
+
+with open("attestations.jsonl", encoding="utf-8") as fh:
+    loaded = [json.loads(line) for line in fh if line.strip()]
+
+ok, message = verify_hash_chain(loaded)
+print(ok, message)
+```
+
+```txt
+True OK
+```
+
+The check walks the chain in order and confirms three things: the sequence
+numbers are gapless from 1, each record links to the previous record's hash, and
+each record's own hash matches its contents.
+
+## Detect a tampered record
+
+Change one field — flip `decision` from `BLOCK` to `ALLOW` — without updating the
+hash, and the check fails:
+
+```python
+tampered = [dict(r) for r in loaded]
+for rec in tampered:
+    if rec["seq_no"] == 2:
+        rec["decision"] = "ALLOW" if rec["decision"] == "BLOCK" else "BLOCK"
+
+ok, message = verify_hash_chain(tampered)
+print(ok, message)
+```
+
+```txt
+False Payload tamper detected at seq_no=2
+```
+
+## Detect a sequence gap
+
+Delete a record, or renumber one, and the check reports the break:
+
+```python
+gapped = [dict(r) for r in loaded]
+for rec in gapped:
+    if rec["seq_no"] == 2:
+        rec["seq_no"] = 3
+
+ok, message = verify_hash_chain(gapped)
+print(ok, message)
+```
+
+```txt
+False Sequence gap at row 2
+```
+
+## Use this in practice
+
+Run the check as a routine audit step, and fail loudly if it ever returns
+`False`:
+
+```python
+ok, message = verify_hash_chain(loaded)
+if not ok:
+    raise SystemExit(f"ledger integrity failure: {message}")
+```
+
+Because the hash covers the previous record's hash, a change anywhere in the
+middle of the chain breaks every record after it. You cannot quietly rewrite
+history: you would have to recompute every subsequent hash, and the chain's
+head would no longer match what your systems recorded at the time.
+
+<CardGroup cols={2}>
+  <Card title="CLI and HTTP reference" href="/reference/cli-and-http" icon="file">
+    Every flag, route, and record field.
+  </Card>
+  <Card title="Why a local gate" href="/explanation/why-a-local-gate" icon="sparkles">
+    The reasoning behind the hash chain.
+  </Card>
+</CardGroup>

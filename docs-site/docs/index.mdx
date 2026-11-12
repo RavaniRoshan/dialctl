@@ -1,0 +1,65 @@
+---
+title: dialctl
+description: A local-first TRAI TCCCPR A2P voice compliance gate — sub-5ms pre-dial policy, a SHA-256 hash-chained attestation ledger, and an offline drift scanner.
+---
+
+`dialctl` decides whether an outbound A2P voice call may be dialed, before it is
+dialed. It evaluates six deterministic rules (R1–R6) against DLT declarations,
+consent records, and CDR history, then appends every decision — allow or block —
+to a tamper-evident, SHA-256 hash-chained ledger.
+
+It runs on your machine. Subscriber phone numbers are HMAC-hashed before they
+reach disk, the hot path makes no network calls, and the browser workbench keeps
+everything in local IndexedDB.
+
+:::note
+dialctl is an engineering utility. It is **not legal advice** and not an official
+TRAI/DLT certification. See [Scope and legal position](/explanation/scope).
+:::
+
+## Where to start
+
+<CardGroup cols={2}>
+  <Card title="Tutorial: your first blocked call" href="/tutorial/first-blocked-call" icon="rocket">
+    Install dialctl, load sample data, and watch R1 through R6 decide a call.
+  </Card>
+  <Card title="How-to: run the pre-dial gate" href="/how-to/run-pre-dial-gate" icon="book">
+    Stand up the webhook and wrap an existing dialler.
+  </Card>
+  <Card title="Reference: CLI and HTTP API" href="/reference/cli-and-http" icon="file">
+    Every flag, route, table, and record field.
+  </Card>
+  <Card title="Explanation: why a local gate" href="/explanation/why-a-local-gate" icon="sparkles">
+    The reasoning behind the design: determinism, privacy, and auditability.
+  </Card>
+</CardGroup>
+
+## The six rules at a glance
+
+| Rule | What it enforces |
+|------|------------------|
+| `R1_CLI_DECLARED` | The calling line identity is declared and active on DLT, within its validity window. |
+| `R2_140_160_SERIES` | Promotional calls come from `+91140`; service, transactional, and inquiry follow-up from `+91160` (`+911600` BFSI). |
+| `R3_ROBO_DND_MODE` | Block when the recipient has no consent row, has enabled the robo-call DND block, or has revoked consent. |
+| `R4_7DAY_INQUIRY` | An inquiry follow-up must fall within 7 days (604800 s) of a verified inquiry backed by an artifact. |
+| `R5_CALL_WINDOW` | Commercial calls are permitted only 09:00:00–21:00:00 IST. |
+| `R6_10DAY_CLUSTER` | Quarantine a CLI at 3+ unique complainants in 10 days, or 2+ with an operator ML flag. |
+
+## Requirements
+
+- **Python 3.12** (standard library only — no dependencies to install)
+- **Node.js 22.19+** only if you want to run the browser workbench or build these docs
+
+## Design guarantees
+
+<CardGroup cols={3}>
+  <Card title="Under 5 ms" icon="gauge">
+    The pre-dial budget is under 5 ms p99; the in-memory baseline is ~0.05 ms.
+  </Card>
+  <Card title="Tamper-evident" icon="lock">
+    Every decision is SHA-256 chained. A flipped bit or a skipped sequence is detected.
+  </Card>
+  <Card title="Local-first" icon="shield">
+    PII is HMAC-hashed before storage. The hot path makes no external calls.
+  </Card>
+</CardGroup>

@@ -1,0 +1,191 @@
+---
+title: CLI and HTTP reference
+description: Every command-line flag, HTTP route, database table, and record field dialctl exposes — the complete contract.
+sidebar:
+  label: CLI and HTTP reference
+---
+
+This page is the complete contract: what the CLI accepts, what the HTTP server
+serves, what the database looks like, and what a decision record contains.
+
+## Command line
+
+```bash
+python3 hydrate_and_verify.py <mode> [--limit N]
+```
+
+| Flag | Meaning |
+|------|---------|
+| `--self-test` | Run a 200-row smoke evaluation, then re-read the exported ledger and verify its hash chain. Prints `PASS: …` or `FAIL: …`; exits non-zero on failure. |
+| `--smoke-test` | Run a smoke evaluation and print the summary JSON. |
+| `--benchmark` | Time `evaluate_pre_dial` over 10,000 iterations; print iterations/second and p99 latency in ms. |
+| `--limit N` | Row count for `--smoke-test`. Defaults to `200`. |
+| `-h`, `--help` | Show usage. |
+
+The modes are mutually exclusive; exactly one is required.
+
+When installed as a package, the same entry point is available as the `dialctl`
+console script:
+
+```bash
+pip install .
+dialctl --self-test
+```
+
+### `--self-test` output
+
+```txt
+PASS: self-test smoke=200 precision=1.0 chain=OK
+```
+
+### `--benchmark` output
+
+```txt
+iterations=10000 iterations_per_sec=53092.27 p99_ms=0.0446
+```
+
+The benchmark measures the evaluation path against an in-memory database. It
+does not include HTTP overhead. For a warm HTTP measurement, see the note under
+[HTTP routes](#http-routes).
+
+## HTTP routes
+
+The server is in `server.py`. Start it with a `ComplianceGateState`:
+
+```python
+from server import ComplianceGateState, main
+main(host="127.0.0.1", port=8080, state=state)
+```
+
+### `POST /v1/pre-dial/evaluate`
+
+Request body:
+
+| Field | Type | Required | Notes |
+|-------|------|----------|-------|
+| `call_sid` | string | yes | Your identifier for the call. |
+| `cli_e164` | string | yes | Calling line identity, E.164. |
+| `customer_phone` | string | yes | Recipient number. Hashed before evaluation. |
+| `call_intent` | string | yes | `INQUIRY_FOLLOWUP`, `PROMOTIONAL`, `SERVICE`, or `TRANSACTIONAL`. |
+| `call_ts` | integer | yes | Unix epoch seconds. Naive strings are read as IST by the CSV hydrator; the HTTP API takes an integer. |
+
+Responses:
+
+| Status | Meaning |
+|--------|---------|
+| `200` | Allowed. Body is the decision record with `decision: "ALLOW"`. |
+| `403` | Blocked. Body is the decision record with `decision: "BLOCK"` and `failed_rules` populated. |
+| `400` | Malformed payload — invalid JSON, non-object body, missing fields, or wrong types. The ledger sequence is **not** advanced. |
+
+### `GET /v1/cli/healthy`
+
+Returns `{"healthy_clis": [...]}` — the CLIs that pass every health check at the
+evaluated time.
+
+| Query | Type | Notes |
+|-------|------|-------|
+| `now_ts` | integer | Unix epoch seconds to evaluate at. Omit for the current time. A non-integer returns `400`. |
+
+A CLI is healthy when all of the following hold:
+
+- It has a declaration with `valid_from <= now_ts <= valid_to` and status active.
+- Over `call_ts` in `[now_ts - 864000, now_ts]`: at most 1 unique complainant
+  and no operator ML flag.
+- It has no undeclared calls in the same window.
+
+Each entry carries `cli_e164`, `declaration_id`, `valid_from`, `valid_to`,
+`unique_complaints_10d`, `operator_ml_flags_10d`, and
+`undeclared_call_count_10d`.
+
+### `GET /`
+
+Serves the browser workbench (`web/index.html`).
+
+:::tip
+A warm HTTP decision over loopback measures roughly 1–2 ms. The sub-5 ms p99
+budget applies to `evaluate_pre_dial` itself, measured at ~0.05 ms by
+`--benchmark`.
+:::
+
+## Database schema
+
+`init_db(conn)` creates three tables in WAL mode, plus indexes.
+
+### `dlt_declarations`
+
+| # | Column | Type | Notes |
+|---|--------|------|-------|
+| 1 | `declaration_id` | TEXT | Primary key. |
+| 2 | `cli_e164` | TEXT | Calling line identity, E.164. |
+| 3 | `operator` | TEXT | Operator name. |
+| 4 | `series` | TEXT | e.g. `160_SERVICE_BFSI`, `140_PROMO`. |
+| 5 | `status` | INTEGER | `1` = declared/active. |
+| 6 | `dlt_status` | TEXT | `ACTIVE`, `SUSPENDED`, or `EXPIRED`. |
+| 7 | `valid_from` | INTEGER | Epoch seconds, inclusive. |
+| 8 | `valid_to` | INTEGER | Epoch seconds, inclusive. |
+
+### `consent_ledger`
+
+| # | Column | Type | Notes |
+|---|--------|------|-------|
+| 1 | `consent_id` | TEXT | Primary key. |
+| 2 | `recipient_hmac` | TEXT | HMAC-SHA256 digest of the recipient number. |
+| 3 | `consent_flag` | INTEGER | `1` when consent is recorded. |
+| 4 | `withdrawal_ts` | INTEGER | Epoch seconds, or NULL. |
+| 5 | `inquiry_verified_ts` | INTEGER | Epoch seconds, or NULL. |
+| 6 | `inquiry_artifact_sha256` | TEXT | Evidence digest, or NULL. |
+| 7 | `revoked_ts` | INTEGER | Epoch seconds, or NULL. |
+
+### `cdr_events`
+
+| # | Column | Type | Notes |
+|---|--------|------|-------|
+| 1 | `event_id` | TEXT | Primary key. |
+| 2 | `cli_e164` | TEXT | Calling line identity. |
+| 3 | `recipient_hmac` | TEXT | HMAC digest of the called number. |
+| 4 | `call_intent` | TEXT | `INQUIRY_FOLLOWUP`, `PROMOTIONAL`, `SERVICE`, `TRANSACTIONAL`. |
+| 5 | `call_ts` | INTEGER | Epoch seconds. |
+| 6 | `duration_sec` | INTEGER | `0` for an unanswered ring. |
+| 7 | `complaint_flag` | INTEGER | `1` when the row is a complaint. |
+| 8 | `complainant_hmac` | TEXT | HMAC digest of the complainant, or NULL. |
+| 9 | `operator_ml_flag` | INTEGER | `1` when the operator ML raised a flag. |
+
+Indexes: `idx_cdr_cli_ts` on `cdr_events(cli_e164, call_ts)`,
+`idx_consent_hmac` on `consent_ledger(recipient_hmac)`, and `idx_dlt_cli` on
+`dlt_declarations(cli_e164)`.
+
+## Decision record
+
+Every decision returns a dict with these keys:
+
+| Key | Type | Notes |
+|-----|------|-------|
+| `seq_no` | int | 1-based, gapless. |
+| `call_sid` | str | The caller's identifier. |
+| `evaluated_ts` | int | Epoch seconds of the call. |
+| `cli_e164` | str | Calling line identity. |
+| `recipient_hmac` | str | 64-hex digest. |
+| `call_intent` | str | The intent passed in. |
+| `decision` | str | `ALLOW` or `BLOCK`. |
+| `failed_rules` | list[str] | Empty when allowed. |
+| `inquiry_age_sec` | int \| null | Seconds since the verified inquiry. |
+| `declaration_id` | str \| null | Matched declaration. |
+| `consent_id` | str \| null | Matched consent row. |
+| `prev_hash` | str | 64-hex, `GENESIS_HASH` for the first record. |
+| `attestation_hash` | str | 64-hex SHA-256 over `prev_hash` + canonical body. |
+
+## Python API
+
+| Function | Purpose |
+|----------|---------|
+| `init_db(conn)` | Create the schema in WAL mode. |
+| `hmac_phone(e164, secret_key)` | Normalize to E.164 and return the HMAC-SHA256 digest. |
+| `parse_ist_timestamp(raw)` | Parse an epoch int or a naive IST string. |
+| `hydrate_csv_tables(conn, dlt, consent, cdr, secret_key)` | Load three CSVs, hashing phone fields. Returns `{"dlt": n, "consent": n, "cdr": n}`. |
+| `evaluate_pre_dial(...)` | Evaluate R1–R6 for one call and return the decision record. |
+| `compute_attestation_hash(prev_hash, payload)` | Hash a record's canonical body. |
+| `verify_hash_chain(records)` | Verify a chain. Returns `(ok, message)`. |
+| `export_attestations_jsonl(records, path)` | Write one canonical JSON record per line. |
+| `compute_cli_risk_score(...)` | Score a CLI's risk. |
+| `compute_termination_exposure_inr(durations)` | Estimate termination exposure. |
+| `select_healthy_clis(conn, now_ts)` | List healthy CLIs. |

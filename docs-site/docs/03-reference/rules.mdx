@@ -1,0 +1,107 @@
+---
+title: The six rules
+description: What R1 through R6 each check, the exact boundaries they enforce, and the data each rule reads.
+sidebar:
+  label: The six rules
+---
+
+Every call is evaluated against six rules. All six run on every call; every
+failure is collected into `failed_rules`, and the call is allowed only when that
+list is empty.
+
+## R1_CLI_DECLARED
+
+The calling line identity must be declared and active on DLT, and the call must
+fall inside the declaration's validity window.
+
+**Reads:** `dlt_declarations` — `status`, `dlt_status`, `valid_from`, `valid_to`.
+
+## R2_140_160_SERIES
+
+The declared series must match the call intent.
+
+| Intent | Required prefix |
+|--------|-----------------|
+| `PROMOTIONAL` | `+91140` |
+| `SERVICE`, `TRANSACTIONAL`, `INQUIRY_FOLLOWUP` | `+91160` (accepts `+911600` for BFSI) |
+
+**Reads:** `cli_e164` and the declared `series`.
+
+## R3_ROBO_DND_MODE
+
+Block when the recipient has no consent row, when the consent row has
+`dnd_robo_block = 1`, or when `revoked_ts` is non-null.
+
+**Reads:** `consent_ledger` — `recipient_hmac`, `dnd_robo_block`, `revoked_ts`.
+
+## R4_7DAY_INQUIRY
+
+For an inquiry follow-up, the recipient must have a consent row with a non-null
+`inquiry_verified_ts` **and** a non-null `inquiry_artifact_sha256`, and the call
+must fall within seven days of that inquiry:
+
+```
+0 <= (call_ts - inquiry_verified_ts) <= 604800
+```
+
+Both bounds are inclusive. `604800` seconds is seven days.
+
+**Reads:** `consent_ledger` — `inquiry_verified_ts`, `inquiry_artifact_sha256`.
+
+## R5_CALL_WINDOW
+
+Commercial calls are permitted only between 09:00:00 and 21:00:00 IST. The check
+is evaluated in IST regardless of how the timestamp was encoded:
+
+```
+32400 <= ((call_ts + 19800) % 86400) <= 75600
+```
+
+Both bounds are inclusive: 09:00:00 and 21:00:00 are allowed; 21:00:01 is not.
+
+**Reads:** the call timestamp only.
+
+## R6_10DAY_CLUSTER
+
+Quarantine a calling line when complaints cluster in a rolling 10-day window.
+Let `distinct` be the count of unique complainants and `ml` the sum of operator
+ML flags over `call_ts` in `[call_ts - 864000, call_ts]`:
+
+- Trip when `distinct >= 3`, **or**
+- Trip when `distinct >= 2` **and** `ml >= 1`.
+
+The count is `COUNT(DISTINCT complainant_hmac)`, so three complaints from the
+same subscriber count as one unique complainant.
+
+**Reads:** `cdr_events` — `complaint_flag`, `complainant_hmac`,
+`operator_ml_flag`, `call_ts`.
+
+## The boundaries that matter
+
+These are the edges the test suite pins:
+
+| Condition | Result |
+|-----------|--------|
+| Inquiry age exactly `604800` s | **ALLOW** (inclusive) |
+| Inquiry age `604801` s | **BLOCK** — `R4_7DAY_INQUIRY` |
+| 21:00:00 IST (second 75600) | **ALLOW** (inclusive) |
+| 21:00:01 IST (second 75601) | **BLOCK** — `R5_CALL_WINDOW` |
+| Three complaints, one complainant, no ML flag | **ALLOW** — one unique complainant |
+| Two distinct complainants with an ML flag | **BLOCK** — `R6_10DAY_CLUSTER` |
+
+## Naive timestamps
+
+A naive CSV timestamp like `"2026-11-12 20:59:30"` is read as **IST** (UTC+05:30),
+not UTC. Reading it as UTC would shift an evening call four and a half hours
+earlier and wrongly trip `R5_CALL_WINDOW`.
+
+## Related
+
+<CardGroup cols={2}>
+  <Card title="Your first blocked call" href="/tutorial/first-blocked-call" icon="rocket">
+    Watch the rules decide a call at the boundary.
+  </Card>
+  <Card title="CLI and HTTP reference" href="/reference/cli-and-http" icon="file">
+    Schema, record fields, and the API.
+  </Card>
+</CardGroup>

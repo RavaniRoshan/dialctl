@@ -1,0 +1,145 @@
+---
+title: Run the pre-dial gate
+description: Serve the decision engine over HTTP, check the routes, and wrap an existing dialler so a blocked call never leaves your system.
+sidebar:
+  label: Run the pre-dial gate
+---
+
+This guide stands the engine up as an HTTP webhook and puts it in front of an
+outbound dialler, so a call that fails the rules is blocked before it is placed.
+
+You will:
+
+1. Start the webhook and confirm it answers.
+2. Send one allowed call and one blocked call.
+3. Wrap a dialler so a blocked call never fires.
+
+## Start the server
+
+The server lives in `server.py` and needs a `ComplianceGateState` — the SQLite
+connection, the HMAC key, and the chain position.
+
+```python
+from server import ComplianceGateState, main
+
+state = ComplianceGateState.create_with_sample_fixture(secret_key="demo-secret")
+main(host="127.0.0.1", port=8080, state=state)
+```
+
+`create_with_sample_fixture` builds an in-memory database with one active
+declaration and one consent row, which is convenient for a first run. For real
+traffic, build the state from your own hydrated database instead.
+
+The server exposes three routes:
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| `POST` | `/v1/pre-dial/evaluate` | Decide one call. |
+| `GET` | `/v1/cli/healthy` | List CLIs that pass every health check. |
+| `GET` | `/` | Serve the browser workbench. |
+
+## Send a call that should be allowed
+
+```bash
+curl -s -X POST http://127.0.0.1:8080/v1/pre-dial/evaluate \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "call_sid": "call_001",
+    "cli_e164": "+911600412900",
+    "customer_phone": "+919876543210",
+    "call_intent": "INQUIRY_FOLLOWUP",
+    "call_ts": 1762936200
+  }'
+```
+
+The response is `200` with the decision record:
+
+```json
+{"call_sid": "call_001", "decision": "ALLOW", "failed_rules": [], "seq_no": 1, "...": "..."}
+```
+
+The server hashes `customer_phone` before it reaches the engine, so the raw
+number is never stored or logged.
+
+## Send a call that should be blocked
+
+An undeclared calling line in the promotional series fails R1 and R2:
+
+```bash
+curl -s -o /dev/null -w '%{http_code}\n' -X POST http://127.0.0.1:8080/v1/pre-dial/evaluate \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "call_sid": "call_002",
+    "cli_e164": "+919811122233",
+    "customer_phone": "+919876543210",
+    "call_intent": "PROMOTIONAL",
+    "call_ts": 1762936200
+  }'
+```
+
+```txt
+403
+```
+
+The body carries the same record, with `decision` set to `BLOCK` and
+`failed_rules` listing what failed. A malformed payload — invalid JSON, or a
+missing required field — returns `400` and does **not** advance the ledger
+sequence.
+
+## Check which CLIs are healthy
+
+```bash
+curl -s 'http://127.0.0.1:8080/v1/cli/healthy?now_ts=1762936200'
+```
+
+```json
+{"healthy_clis": [{"cli_e164": "+911600412900", "unique_complaints_10d": 0, "...": "..."}]}
+```
+
+The endpoint evaluates health at the `now_ts` you pass, so a CLI whose
+declaration has expired, or whose complaints have aged out of the 10-day window,
+is classified correctly. Omit `now_ts` to use the current time.
+
+## Wrap a dialler
+
+The middleware raises before your dial callback runs, so a blocked call never
+reaches the carrier:
+
+```python
+from middleware import ComplianceBlockError, SarvamExotelComplianceMiddleware
+
+gate = SarvamExotelComplianceMiddleware(state)
+
+try:
+    result = gate.dial(
+        call_sid="call_003",
+        cli_e164="+911600412900",
+        customer_phone="+919876543210",
+        call_intent="INQUIRY_FOLLOWUP",
+        call_ts=1762936200,
+        dial_callback=lambda: my_dialler.place_call(),
+    )
+except ComplianceBlockError as exc:
+    log.warning("blocked call %s: %s", "call_003", exc.failed_rules)
+```
+
+`ComplianceBlockError` carries `failed_rules` and the `attestation_hash` of the
+blocking decision, so you can record why a call was suppressed without placing
+it.
+
+:::warning
+Do not swallow `ComplianceBlockError` with a bare `except`. A blocked call that
+is retried in a loop is still a blocked call, and the ledger will record every
+attempt.
+:::
+
+## What to check next
+
+<CardGroup cols={2}>
+  <Card title="CLI and HTTP reference" href="/reference/cli-and-http" icon="file">
+    Every flag, route, and record field.
+  </Card>
+  <Card title="Verify the ledger" href="/how-to/verify-the-ledger" icon="check">
+    Re-read an exported ledger and detect tampering.
+  </Card>
+</CardGroup>

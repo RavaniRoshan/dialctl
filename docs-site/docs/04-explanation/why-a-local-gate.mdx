@@ -1,0 +1,108 @@
+---
+title: Why a local gate
+description: The reasoning behind dialctl's design — deterministic rules, local-first privacy, and a tamper-evident ledger — and what each choice costs.
+sidebar:
+  label: Why a local gate
+---
+
+dialctl is deliberately small: six rules, one SQLite file, one hash chain, no
+dependencies. That is not minimalism for its own sake. Each choice follows from
+what a pre-dial compliance gate has to guarantee.
+
+## Why the decision has to be deterministic
+
+A compliance gate that blocks a call needs to answer two questions later: *why
+was this call blocked*, and *would it be blocked again*? Both require the same
+inputs to produce the same answer, every time.
+
+That is why every rule in dialctl is a pure comparison against stored data. There
+is no model, no score threshold tuned by hand, no "usually promotional" heuristic
+on the decision path. `evaluate_pre_dial` reads rows, evaluates six conditions,
+and returns a list of rule names.
+
+The tradeoff is that dialctl cannot catch novel abuse — it only enforces the six
+rules it knows. That is the right trade for a gate whose job is to be
+predictable and auditable. Anything fuzzier belongs in review, not in the
+pre-dial path.
+
+## Why the rules read from the database at call time
+
+A declaration that expired yesterday must not authorize a call today. A consent
+record revoked an hour ago must block immediately. So the engine queries the
+tables on every evaluation rather than caching a decision.
+
+This costs a few indexed lookups per call — measured at roughly 0.05 ms in the
+in-memory benchmark — and buys correctness against the current state of the
+world. The 5 ms budget is comfortable precisely because the queries are small and
+indexed.
+
+## Why phone numbers are hashed, never stored
+
+Subscriber phone numbers are personal data. dialctl never needs the raw number
+after the moment of evaluation: it needs a stable identifier it can compare
+against consent records, complaint rows, and call history.
+
+So every number is normalized to E.164 and replaced with
+`HMAC-SHA256(secret_key, e164)` — 64 hex characters. The digest is stable for a
+given key, so joins work, but the raw number is not recoverable from the
+database, the JSONL ledger, or the browser.
+
+:::warning
+The digest is only as strong as the key. A weak `HMAC_SECRET_KEY` makes the
+digests brute-forceable, which would re-identify subscribers. Treat the key as a
+secret: load it from the environment, never commit it, and rotate it with a
+re-hydration plan.
+:::
+
+The cost is that you cannot recover a phone number from dialctl later. That is
+the point.
+
+## Why the ledger is hash-chained
+
+A decision log is only useful if you can trust it after the fact. A plain log can
+be edited: change `BLOCK` to `ALLOW`, and nothing notices.
+
+dialctl chains each record to the one before it. Every record stores the
+previous record's hash, and its own hash covers both the previous hash and the
+record's contents. Recomputing the chain after any edit produces a mismatch at
+exactly the record that changed — and, because each hash feeds the next, at every
+record after it.
+
+```python
+ok, message = verify_hash_chain(records)
+# (False, 'Payload tamper detected at seq_no=2')
+```
+
+The cost is that you cannot rewrite history quietly. You would have to recompute
+every later hash, and your stored head would no longer match what you recorded at
+the time. That is the property you want from an audit log.
+
+## Why the hot path makes no network calls
+
+The gate sits in front of a live dialler. If the decision required a network
+round-trip, every call would inherit that latency, and an outage would either
+block all calling or fail open.
+
+So `evaluate_pre_dial` reads local SQLite and returns. Nothing on the decision
+path fetches a remote list, calls a scoring service, or writes to a remote log.
+Hydration happens up front; evaluation happens locally.
+
+The cost is that dialctl's view is only as fresh as the data you hydrated. Keep
+the database current, and the gate stays correct.
+
+## What dialctl is not
+
+dialctl enforces six deterministic rules and produces an auditable record. It is
+not legal advice, and it is not an official TRAI/DLT certification. It does not
+decide whether a campaign is *allowed* in a broader regulatory sense — only
+whether it passes these six checks. Treat its output as engineering evidence, and
+confirm obligations with qualified counsel.
+
+<CardGroup cols={2}>
+  <Card title="Run the pre-dial gate" href="/how-to/run-pre-dial-gate" icon="book">
+    Put the engine in front of a dialler.
+  </Card>
+  <Card title="Verify the ledger" href="/how-to/verify-the-ledger" icon="check">
+    Detect tampering in an exported chain.
+  </Card>
+</CardGroup>
