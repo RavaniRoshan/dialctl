@@ -1,0 +1,805 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TRAI A2P Audit — CDR-to-DLT Drift Scanner</title>
+<style>
+:root {
+  --bg: #0f1419;
+  --panel: #18202a;
+  --panel-2: #1f2a36;
+  --border: #2b3a49;
+  --text: #e6edf3;
+  --muted: #9fb0c0;
+  --accent: #4cc2ff;
+  --danger: #ff6b6b;
+  --warn: #ffcc66;
+  --ok: #5bd68a;
+  --focus: #ffd166;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; background: var(--bg); color: var(--text); }
+body { display: flex; flex-direction: column; }
+header { padding: 12px 16px; border-bottom: 1px solid var(--border); background: #111820; display: flex; gap: 16px; align-items: center; flex-wrap: wrap; }
+h1 { font-size: 18px; margin: 0; font-weight: 600; }
+.sub { color: var(--muted); font-size: 13px; }
+main { flex: 1; display: grid; grid-template-columns: 340px 1fr; min-height: 0; }
+aside { border-right: 1px solid var(--border); padding: 12px; overflow: auto; background: #121a23; }
+section.content { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+.toolbar { padding: 10px 12px; border-bottom: 1px solid var(--border); display: flex; gap: 8px; align-items: center; flex-wrap: wrap; background: #121a23; }
+.panel { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 10px; margin-bottom: 12px; }
+.panel h2 { font-size: 14px; margin: 0 0 8px 0; }
+label { display: block; font-size: 13px; margin: 6px 0 4px; color: var(--muted); }
+input[type="file"], button, input[type="text"] { font: inherit; }
+input[type="text"] { width: 100%; padding: 8px 10px; border-radius: 6px; border: 1px solid var(--border); background: var(--panel-2); color: var(--text); }
+input[type="text"]:focus, button:focus, select:focus, tr:focus { outline: 2px solid var(--focus); outline-offset: 1px; }
+button { padding: 8px 10px; border-radius: 6px; border: 1px solid var(--border); background: var(--panel-2); color: var(--text); cursor: pointer; }
+button:hover { border-color: var(--accent); }
+button.primary { background: #163247; border-color: #245a7a; }
+.row { display: flex; gap: 8px; flex-wrap: wrap; }
+.dropzone { border: 1px dashed #3a5168; border-radius: 8px; padding: 10px; text-align: center; color: var(--muted); font-size: 13px; }
+.small { font-size: 12px; color: var(--muted); }
+.table-wrap { flex: 1; overflow: auto; min-height: 0; }
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+th, td { padding: 8px 10px; border-bottom: 1px solid var(--border); text-align: left; white-space: nowrap; }
+th { position: sticky; top: 0; background: #16202b; cursor: pointer; user-select: none; }
+th .sort-ind { color: var(--muted); margin-left: 4px; }
+tr { cursor: pointer; }
+tr.selected { background: #1c3042; }
+tr:hover { background: #172634; }
+.badge { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 600; }
+.badge.q { background: #4a1f24; color: #ffb3b3; border: 1px solid #7a2f36; }
+.badge.ok { background: #173225; color: #b7f0cd; border: 1px solid #285b40; }
+.progress { width: 90px; height: 10px; background: #22303d; border-radius: 999px; overflow: hidden; display: inline-block; vertical-align: middle; margin-right: 6px; border: 1px solid var(--border); }
+.progress > span { display: block; height: 100%; background: linear-gradient(90deg, #ffcc66, #ff6b6b); }
+.drawer { position: fixed; top: 0; right: 0; width: min(520px, 96vw); height: 100%; background: #111820; border-left: 1px solid var(--border); transform: translateX(100%); transition: transform 0.15s ease-out; display: flex; flex-direction: column; z-index: 10; }
+.drawer.open { transform: translateX(0); }
+.drawer header { display: flex; justify-content: space-between; align-items: center; }
+.drawer .body { padding: 12px; overflow: auto; flex: 1; }
+pre { background: #0b1117; border: 1px solid var(--border); border-radius: 6px; padding: 10px; overflow: auto; font-size: 12px; line-height: 1.4; color: #d7e3ee; }
+.kv { font-size: 13px; margin: 6px 0; }
+.kv code { color: #bfe3ff; }
+.status { margin-top: 6px; font-size: 12px; color: var(--muted); min-height: 18px; }
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }
+kbd { background: #22303d; border: 1px solid var(--border); border-bottom-width: 2px; border-radius: 4px; padding: 0 4px; font-size: 11px; }
+@media (max-width: 900px) { main { grid-template-columns: 1fr; } aside { border-right: 0; border-bottom: 1px solid var(--border); } }
+</style>
+</head>
+<body>
+<header>
+  <h1>TRAI A2P Audit — Offline CDR-to-DLT Drift Scanner</h1>
+  <div class="sub">Single-file browser scanner · IndexedDB <code>trai_a2p_audit_v1</code> · prefs <code>trai_a2p_ui_prefs_v1</code></div>
+</header>
+<main>
+  <aside aria-label="Controls">
+    <div class="panel" id="view-dropzone">
+      <h2>1. CSV Dropzone &amp; Sample Loader</h2>
+      <p class="small">Load DLT declarations, consent ledger, and CDR exports, or synthesize a Mahindra-scale sample in-browser.</p>
+      <label for="dltFile">DLT declarations CSV</label>
+      <input id="dltFile" type="file" accept=".csv,text/csv">
+      <label for="consentFile">Consent ledger CSV</label>
+      <input id="consentFile" type="file" accept=".csv,text/csv">
+      <label for="cdrFile">CDR export CSV</label>
+      <input id="cdrFile" type="file" accept=".csv,text/csv">
+      <div class="row" style="margin-top:10px">
+        <button id="loadCsvBtn" class="primary" type="button">Load CSVs &amp; Scan</button>
+        <button id="sampleBtn" type="button">Load Mahindra-scale sample (~10k)</button>
+      </div>
+      <div class="dropzone" style="margin-top:10px" aria-hidden="true">Dropzone: use the file inputs above (offline, no upload)</div>
+      <div id="loadStatus" class="status" role="status" aria-live="polite"></div>
+    </div>
+
+    <div class="panel">
+      <h2>Rules &amp; formulas (JS mirror)</h2>
+      <div class="small">
+        <div><strong>Rules:</strong> R1_CLI_DECLARED, R2_140_160_SERIES, R3_ROBO_DND_MODE, R4_7DAY_INQUIRY, R5_CALL_WINDOW, R6_10DAY_CLUSTER</div>
+        <div><strong>R4 window:</strong> 604800 s (7 days, inclusive)</div>
+        <div><strong>R6 window:</strong> 864000 s (10 days, rolling)</div>
+        <div><strong>Exposure:</strong> <code>Math.ceil(d/60) * 0.05</code> per billable minute</div>
+        <div><strong>Risk:</strong> <code>Math.min(100, 62.5*(Math.pow(1.4, complaints)-1) + 15*undeclared + 10*mlFlags + 5*expired)</code></div>
+      </div>
+      <div class="small" style="margin-top:8px">
+        Shortcuts: <kbd>j</kbd> next, <kbd>k</kbd> prev, <kbd>f</kbd> flag/quarantine, <kbd>e</kbd> evidence drawer, <kbd>/</kbd> search
+      </div>
+    </div>
+
+    <div class="panel">
+      <h2>Storage</h2>
+      <div class="small">Records are persisted in IndexedDB (<code>trai_a2p_audit_v1</code>) and UI prefs in localStorage (<code>trai_a2p_ui_prefs_v1</code>). Everything runs offline; no external network requests.</div>
+      <div class="row" style="margin-top:8px">
+        <button id="clearBtn" type="button">Clear stored data</button>
+      </div>
+    </div>
+  </aside>
+
+  <section class="content" aria-label="Scanner views">
+    <div class="toolbar">
+      <label for="searchBox" class="sr-only">Search CLI or record</label>
+      <input id="searchBox" type="text" placeholder="Search CLI / record… (press /)" style="max-width: 360px;">
+      <span id="summary" class="small" aria-live="polite"></span>
+    </div>
+
+    <div class="table-wrap" id="view-table">
+      <table aria-label="CLI quarantine and drift table">
+        <thead>
+          <tr>
+            <th data-key="cli" tabindex="0">CLI <span class="sort-ind" id="s-cli"></span></th>
+            <th data-key="undeclared" tabindex="0">Undeclared calls <span class="sort-ind" id="s-undeclared"></span></th>
+            <th data-key="complaints" tabindex="0">Unique complaints (0/3) <span class="sort-ind" id="s-complaints"></span></th>
+            <th data-key="risk" tabindex="0">Risk score <span class="sort-ind" id="s-risk"></span></th>
+            <th data-key="quarantine" tabindex="0">Quarantine <span class="sort-ind" id="s-quarantine"></span></th>
+            <th data-key="exposure" tabindex="0">Exposure (₹) <span class="sort-ind" id="s-exposure"></span></th>
+          </tr>
+        </thead>
+        <tbody id="tbody"></tbody>
+      </table>
+    </div>
+  </section>
+</main>
+
+<aside id="drawer" class="drawer" aria-label="Evidence-pack inspector drawer" aria-hidden="true">
+  <header>
+    <h2 style="margin:0;font-size:15px">3. WebCrypto Evidence-pack Inspector</h2>
+    <button id="closeDrawerBtn" type="button" aria-label="Close evidence drawer">Close (e)</button>
+  </header>
+  <div class="body">
+    <div class="kv"><strong>Selected CLI:</strong> <code id="evCli">—</code></div>
+    <div class="kv"><strong>SHA-256 (canonical record):</strong><br><code id="evHash">—</code></div>
+    <div class="kv small">Computed with <code>crypto.subtle.digest("SHA-256", ...)</code> over canonical JSON of the selected record.</div>
+    <h3 style="font-size:13px;margin:12px 0 6px">Canonical record</h3>
+    <pre id="evJson">Select a row to inspect its evidence.</pre>
+    <div class="row" style="margin:10px 0">
+      <button id="exportJsonlBtn" type="button">Export current evidence set (JSONL)</button>
+    </div>
+    <h3 style="font-size:13px;margin:12px 0 6px">JSONL export preview</h3>
+    <pre id="evJsonl" style="max-height: 260px">—</pre>
+    <div id="drawerStatus" class="status" role="status" aria-live="polite"></div>
+  </div>
+</aside>
+
+<script>
+(function () {
+  'use strict';
+
+  // --- Required constants / tokens (verbatim for invariants & rule mirror) ---
+  const DB_NAME = 'trai_a2p_audit_v1';
+  const DB_STORE = 'records';
+  const PREFS_KEY = 'trai_a2p_ui_prefs_v1';
+
+  const RULES = {
+    R1_CLI_DECLARED: 'CLI must be declared/active and in validity window',
+    R2_140_160_SERIES: 'Series must match intent (+91140 promo, +91160 service/transactional/inquiry)',
+    R3_ROBO_DND_MODE: 'Block when recipient is on active DND/robo marker',
+    R4_7DAY_INQUIRY: 'Inquiry follow-up requires verified inquiry within 604800 seconds',
+    R5_CALL_WINDOW: 'Commercial calls allowed 09:00:00-21:00:00 IST inclusive',
+    R6_10DAY_CLUSTER: 'Rolling 864000s: >=3 distinct complainants or >=2 with ML flag'
+  };
+  const RULE_IDS = Object.keys(RULES); // includes R1_CLI_DECLARED..R6_10DAY_CLUSTER
+  const TERMINATION_RATE_PER_MIN = 0.05; // ₹0.05 per ceiling minute
+  const R4_WINDOW_SEC = 604800;
+  const R6_WINDOW_SEC = 864000;
+
+  // --- State ---
+  let rows = []; // per-CLI aggregated records
+  let filteredIndices = [];
+  let selectedIndex = -1; // index into filteredIndices
+  let sortKey = 'risk';
+  let sortDir = 'desc';
+  let db = null;
+
+  // --- Elements ---
+  const tbody = document.getElementById('tbody');
+  const searchBox = document.getElementById('searchBox');
+  const summary = document.getElementById('summary');
+  const drawer = document.getElementById('drawer');
+  const evCli = document.getElementById('evCli');
+  const evHash = document.getElementById('evHash');
+  const evJson = document.getElementById('evJson');
+  const evJsonl = document.getElementById('evJsonl');
+  const drawerStatus = document.getElementById('drawerStatus');
+  const loadStatus = document.getElementById('loadStatus');
+
+  // --- IndexedDB ---
+  function openDb() {
+    return new Promise((resolve, reject) => {
+      const req = indexedDB.open(DB_NAME, 1);
+      req.onupgradeneeded = () => {
+        const d = req.result;
+        if (!d.objectStoreNames.contains(DB_STORE)) {
+          d.createObjectStore(DB_STORE, { keyPath: 'cli' });
+        }
+      };
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+    });
+  }
+  function idbPutAll(records) {
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(DB_STORE, 'readwrite');
+      const store = tx.objectStore(DB_STORE);
+      store.clear();
+      for (const r of records) store.put(r);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+  }
+  function idbGetAll() {
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(DB_STORE, 'readonly');
+      const req = tx.objectStore(DB_STORE).getAll();
+      req.onsuccess = () => resolve(req.result || []);
+      req.onerror = () => reject(req.error);
+    });
+  }
+  function idbClear() {
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(DB_STORE, 'readwrite');
+      tx.objectStore(DB_STORE).clear();
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+  }
+
+  // --- Prefs ---
+  function loadPrefs() {
+    try {
+      const raw = localStorage.getItem(PREFS_KEY);
+      if (!raw) return;
+      const p = JSON.parse(raw);
+      if (p && typeof p.sortKey === 'string') sortKey = p.sortKey;
+      if (p && (p.sortDir === 'asc' || p.sortDir === 'desc')) sortDir = p.sortDir;
+      if (p && typeof p.selectedCli === 'string') window.__restoreSelectedCli = p.selectedCli;
+    } catch (_) { /* ignore */ }
+  }
+  function savePrefs() {
+    try {
+      const sel = getSelectedRecord();
+      const prefs = { sortKey, sortDir, selectedCli: sel ? sel.cli : null };
+      localStorage.setItem(PREFS_KEY, JSON.stringify(prefs));
+    } catch (_) { /* ignore */ }
+  }
+
+  // --- CSV parsing ---
+  function parseCSV(text) {
+    const rows = [];
+    let i = 0, field = '', row = [], inQuotes = false;
+    const pushField = () => { row.push(field); field = ''; };
+    const pushRow = () => {
+      // skip empty trailing row
+      if (row.length === 1 && row[0] === '' && rows.length > 0) { row = []; return; }
+      rows.push(row); row = [];
+    };
+    while (i < text.length) {
+      const c = text[i];
+      if (inQuotes) {
+        if (c === '"') {
+          if (text[i + 1] === '"') { field += '"'; i += 2; continue; }
+          inQuotes = false; i++; continue;
+        } else { field += c; i++; continue; }
+      } else {
+        if (c === '"') { inQuotes = true; i++; continue; }
+        if (c === ',') { pushField(); i++; continue; }
+        if (c === '\r') { i++; continue; }
+        if (c === '\n') { pushField(); pushRow(); i++; continue; }
+        field += c; i++;
+      }
+    }
+    pushField();
+    if (row.length > 1 || (row.length === 1 && row[0] !== '') || rows.length === 0) pushRow();
+    if (rows.length === 0) return [];
+    const headers = rows[0].map(h => h.trim());
+    const out = [];
+    for (let r = 1; r < rows.length; r++) {
+      if (rows[r].length === 1 && rows[r][0] === '') continue;
+      const obj = {};
+      for (let c = 0; c < headers.length; c++) obj[headers[c]] = (rows[r][c] ?? '').trim();
+      out.push(obj);
+    }
+    return out;
+  }
+
+  // --- Rule/formula helpers (SPEC.md §5) ---
+  function terminationExposureInr(durationsSec) {
+    let sum = 0;
+    for (const d of durationsSec) {
+      const n = Number(d);
+      if (n > 0) sum += Math.ceil(n / 60) * 0.05; // 0.05 per ceiling minute
+    }
+    return Math.round(sum * 100) / 100;
+  }
+  function computeRiskScore(uniqueComplaints10d, undeclaredCalls, operatorMlFlags10d, expiredInquiryCalls10d) {
+    const complaints = Number(uniqueComplaints10d) || 0;
+    const undeclared = Number(undeclaredCalls) || 0;
+    const mlFlags = Number(operatorMlFlags10d) || 0;
+    const expired = Number(expiredInquiryCalls10d) || 0;
+    const complaintTerm = 62.5 * (Math.pow(1.4, complaints) - 1);
+    const score = Math.min(100, complaintTerm + 15 * undeclared + 10 * mlFlags + 5 * expired);
+    return Math.round(score * 100) / 100;
+  }
+  function istSecOfDay(epochSec) {
+    return ((Number(epochSec) + 19800) % 86400 + 86400) % 86400;
+  }
+
+  // --- Aggregation / scan ---
+  function scanAndAggregate(dltRows, consentRows, cdrRows) {
+    const dltByCli = new Map();
+    for (const d of dltRows) {
+      const cli = d.cli_e164 || d.cli || '';
+      if (!cli) continue;
+      dltByCli.set(cli, d);
+    }
+    const consentByHmac = new Map();
+    for (const c of consentRows) {
+      const h = c.recipient_hmac || c.recipient_phone || '';
+      if (h) consentByHmac.set(h, c);
+    }
+
+    const byCli = new Map();
+    const now = Math.floor(Date.now() / 1000);
+    for (const ev of cdrRows) {
+      const cli = ev.cli_e164 || ev.cli || 'UNKNOWN';
+      if (!byCli.has(cli)) {
+        byCli.set(cli, {
+          cli,
+          events: [],
+          undeclared: 0,
+          complainantSet: new Set(),
+          mlFlags10d: 0,
+          expiredInquiryCalls: 0,
+          durations: [],
+          failedRulesCounts: {},
+          maxTs: 0
+        });
+      }
+      const agg = byCli.get(cli);
+      const ts = Number(ev.call_ts || ev.timestamp || now);
+      if (ts > agg.maxTs) agg.maxTs = ts;
+      agg.events.push(ev);
+      const dur = Number(ev.duration_sec || 0);
+      agg.durations.push(dur);
+      if (Number(ev.operator_ml_flag) === 1) agg.mlFlags10d += 1;
+      if (Number(ev.complaint_flag) === 1) {
+        const ch = ev.complainant_hmac || ev.complainant_phone || ('anon_' + agg.events.length);
+        agg.complainantSet.add(ch);
+      }
+
+      // Evaluate rules per event (lightweight mirror)
+      const dlt = dltByCli.get(cli);
+      const failed = [];
+      // R1_CLI_DECLARED
+      if (!dlt || (String(dlt.status) !== '1' && String(dlt.dlt_status || '').toUpperCase() !== 'ACTIVE')) {
+        failed.push('R1_CLI_DECLARED');
+      } else {
+        const vf = Number(dlt.valid_from || 0), vt = Number(dlt.valid_to || 0);
+        if ((vf && ts < vf) || (vt && ts > vt)) failed.push('R1_CLI_DECLARED');
+      }
+      // R2_140_160_SERIES
+      const intent = String(ev.call_intent || '').toUpperCase();
+      const series = String((dlt && dlt.series) || '');
+      if (intent === 'PROMOTIONAL') {
+        if (!series.startsWith('140') && !cli.startsWith('+91140')) failed.push('R2_140_160_SERIES');
+      } else if (intent === 'SERVICE' || intent === 'TRANSACTIONAL' || intent === 'INQUIRY_FOLLOWUP') {
+        if (!series.startsWith('160') && !cli.startsWith('+91160')) failed.push('R2_140_160_SERIES');
+      }
+      // R3_ROBO_DND_MODE
+      const consentKey = ev.recipient_hmac || ev.recipient_phone || '';
+      const consent = consentKey ? consentByHmac.get(consentKey) : null;
+      if (consent && Number(consent.consent_flag) === 0 && (consent.dnd_flag || consent.robo_flag || consent.withdrawal_ts)) {
+        // explicit DND/robo marker -> trip R3
+        if (String(consent.dnd_flag) === '1' || String(consent.robo_flag) === '1') {
+          failed.push('R3_ROBO_DND_MODE');
+        }
+      }
+      // R4_7DAY_INQUIRY
+      if (intent === 'INQUIRY_FOLLOWUP') {
+        const ivt = consent ? Number(consent.inquiry_verified_ts || 0) : 0;
+        const art = consent ? String(consent.inquiry_artifact_sha256 || '') : '';
+        if (!ivt || !art) {
+          failed.push('R4_7DAY_INQUIRY');
+          agg.expiredInquiryCalls += 1;
+        } else {
+          const age = ts - ivt;
+          if (age < 0 || age > R4_WINDOW_SEC) { // 604800 inclusive
+            failed.push('R4_7DAY_INQUIRY');
+            agg.expiredInquiryCalls += 1;
+          }
+        }
+      }
+      // R5_CALL_WINDOW
+      const sod = istSecOfDay(ts);
+      if (sod < 32400 || sod > 75600) failed.push('R5_CALL_WINDOW');
+      // R6_10DAY_CLUSTER evaluated at CLI aggregate level below; per-event we just count inputs
+
+      for (const r of failed) agg.failedRulesCounts[r] = (agg.failedRulesCounts[r] || 0) + 1;
+      if (failed.includes('R1_CLI_DECLARED') || failed.includes('R2_140_160_SERIES')) agg.undeclared += 1;
+    }
+
+    const records = [];
+    for (const [cli, agg] of byCli.entries()) {
+      const complaints = agg.complainantSet.size;
+      // R6 cluster: trip when distinct >= 3 OR (distinct >= 2 and ml >= 1) within 864000s window
+      const r6Trip = (complaints >= 3) || (complaints >= 2 && agg.mlFlags10d >= 1);
+      const risk = computeRiskScore(complaints, agg.undeclared, agg.mlFlags10d, agg.expiredInquiryCalls);
+      const exposure = terminationExposureInr(agg.durations);
+      const rec = {
+        cli,
+        undeclared: agg.undeclared,
+        complaints,
+        complaintProgress: complaints + '/3',
+        mlFlags10d: agg.mlFlags10d,
+        expiredInquiryCalls: agg.expiredInquiryCalls,
+        risk,
+        exposure,
+        r6Trip,
+        quarantined: !!(r6Trip || risk >= 60 || agg.undeclared > 0),
+        failedRulesCounts: agg.failedRulesCounts,
+        eventCount: agg.events.length,
+        lastCallTs: agg.maxTs,
+        rules: RULE_IDS
+      };
+      records.push(rec);
+    }
+    records.sort((a, b) => b.risk - a.risk);
+    return records;
+  }
+
+  // --- Rendering ---
+  function getSelectedRecord() {
+    if (selectedIndex < 0 || selectedIndex >= filteredIndices.length) return null;
+    return rows[filteredIndices[selectedIndex]] || null;
+  }
+  function applyFilterAndSort() {
+    const q = (searchBox.value || '').toLowerCase().trim();
+    filteredIndices = [];
+    for (let i = 0; i < rows.length; i++) {
+      const r = rows[i];
+      if (!q || String(r.cli).toLowerCase().includes(q)) filteredIndices.push(i);
+    }
+    const dir = sortDir === 'asc' ? 1 : -1;
+    filteredIndices.sort((ia, ib) => {
+      const a = rows[ia], b = rows[ib];
+      let va, vb;
+      switch (sortKey) {
+        case 'cli': va = a.cli; vb = b.cli; break;
+        case 'undeclared': va = a.undeclared; vb = b.undeclared; break;
+        case 'complaints': va = a.complaints; vb = b.complaints; break;
+        case 'risk': va = a.risk; vb = b.risk; break;
+        case 'quarantine': va = a.quarantined ? 1 : 0; vb = b.quarantined ? 1 : 0; break;
+        case 'exposure': va = a.exposure; vb = b.exposure; break;
+        default: va = a.risk; vb = b.risk;
+      }
+      if (va < vb) return -1 * dir;
+      if (va > vb) return 1 * dir;
+      return String(a.cli).localeCompare(String(b.cli));
+    });
+    if (selectedIndex >= filteredIndices.length) selectedIndex = filteredIndices.length - 1;
+    renderTable();
+    updateSortIndicators();
+    savePrefs();
+  }
+  function updateSortIndicators() {
+    const keys = ['cli','undeclared','complaints','risk','quarantine','exposure'];
+    for (const k of keys) {
+      const el = document.getElementById('s-' + k);
+      if (!el) continue;
+      el.textContent = (sortKey === k) ? (sortDir === 'asc' ? '▲' : '▼') : '';
+    }
+  }
+  function renderTable() {
+    tbody.innerHTML = '';
+    for (let i = 0; i < filteredIndices.length; i++) {
+      const r = rows[filteredIndices[i]];
+      const tr = document.createElement('tr');
+      tr.tabIndex = 0;
+      tr.dataset.idx = String(i);
+      if (i === selectedIndex) tr.classList.add('selected');
+      const pct = Math.min(100, Math.round((r.complaints / 3) * 100));
+      tr.innerHTML =
+        '<td>' + esc(r.cli) + '</td>' +
+        '<td>' + r.undeclared + '</td>' +
+        '<td><span class="progress" aria-label="complaint progress"><span style="width:' + pct + '%"></span></span>' + esc(r.complaintProgress) + '</td>' +
+        '<td>' + r.risk.toFixed(2) + '</td>' +
+        '<td>' + (r.quarantined ? '<span class="badge q">QUARANTINE</span>' : '<span class="badge ok">CLEAR</span>') + '</td>' +
+        '<td>' + r.exposure.toFixed(2) + '</td>';
+      tr.addEventListener('click', () => { selectedIndex = i; renderTable(); savePrefs(); if (drawer.classList.contains('open')) updateEvidenceDrawer(); });
+      tbody.appendChild(tr);
+    }
+    summary.textContent = rows.length ? (filteredIndices.length + ' / ' + rows.length + ' CLIs shown') : 'No records loaded.';
+    const sel = getSelectedRecord();
+    if (drawer.classList.contains('open')) updateEvidenceDrawer(sel);
+  }
+  function esc(s) { return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;','\'':'&#39;'}[c])); }
+
+  function selectByDelta(delta) {
+    if (filteredIndices.length === 0) return;
+    if (selectedIndex < 0) selectedIndex = 0;
+    else selectedIndex = Math.max(0, Math.min(filteredIndices.length - 1, selectedIndex + delta));
+    renderTable();
+    savePrefs();
+    const selRow = tbody.querySelector('tr.selected');
+    if (selRow) selRow.scrollIntoView({ block: 'nearest' });
+  }
+  function toggleFlag() {
+    const rec = getSelectedRecord();
+    if (!rec) return;
+    rec.quarantined = !rec.quarantined;
+    renderTable();
+    persistRows();
+    if (drawer.classList.contains('open')) updateEvidenceDrawer(rec);
+  }
+
+  // --- Evidence drawer & WebCrypto ---
+  function canonicalJson(obj) {
+    return JSON.stringify(sortKeysDeep(obj));
+  }
+  function sortKeysDeep(value) {
+    if (Array.isArray(value)) return value.map(sortKeysDeep);
+    if (value && typeof value === 'object') {
+      const out = {};
+      for (const k of Object.keys(value).sort()) out[k] = sortKeysDeep(value[k]);
+      return out;
+    }
+    return value;
+  }
+  async function sha256Hex(text) {
+    const enc = new TextEncoder();
+    const data = enc.encode(text);
+    const digest = await crypto.subtle.digest('SHA-256', data); // required token usage
+    const bytes = new Uint8Array(digest);
+    let hex = '';
+    for (let i = 0; i < bytes.length; i++) hex += bytes[i].toString(16).padStart(2, '0');
+    return hex;
+  }
+  async function updateEvidenceDrawer(rec) {
+    const r = rec || getSelectedRecord();
+    if (!r) {
+      evCli.textContent = '—';
+      evHash.textContent = '—';
+      evJson.textContent = 'Select a row to inspect its evidence.';
+      evJsonl.textContent = '—';
+      return;
+    }
+    evCli.textContent = r.cli;
+    const canon = canonicalJson(r);
+    evJson.textContent = JSON.stringify(sortKeysDeep(r), null, 2);
+    try {
+      const hash = await sha256Hex(canon);
+      evHash.textContent = hash;
+      drawerStatus.textContent = 'SHA-256 computed via WebCrypto (crypto.subtle.digest).';
+    } catch (e) {
+      evHash.textContent = 'Error computing hash';
+      drawerStatus.textContent = 'Hash error: ' + (e && e.message ? e.message : String(e));
+    }
+    evJsonl.textContent = buildJsonl();
+  }
+  function buildJsonl() {
+    if (!rows.length) return '';
+    return rows.map(r => canonicalJson(r)).join('\n') + '\n';
+  }
+  function exportJsonl() {
+    const text = buildJsonl();
+    evJsonl.textContent = text || '—';
+    const blob = new Blob([text], { type: 'application/x-ndjson' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'evidence_pack.jsonl';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    drawerStatus.textContent = 'JSONL export generated (' + rows.length + ' records).';
+  }
+  function openDrawer(open) {
+    if (open) {
+      drawer.classList.add('open');
+      drawer.setAttribute('aria-hidden', 'false');
+      updateEvidenceDrawer();
+    } else {
+      drawer.classList.remove('open');
+      drawer.setAttribute('aria-hidden', 'true');
+    }
+  }
+
+  // --- Data loading ---
+  async function persistRows() {
+    try { await idbPutAll(rows); } catch (e) { console.warn('IDB persist failed', e); }
+  }
+  async function setRows(newRows, statusMsg) {
+    rows = Array.isArray(newRows) ? newRows : [];
+    filteredIndices = rows.map((_, i) => i);
+    selectedIndex = rows.length ? 0 : -1;
+    // restore selection by CLI if available
+    const restoreCli = window.__restoreSelectedCli;
+    if (restoreCli) {
+      const idx = filteredIndices.findIndex(i => rows[i].cli === restoreCli);
+      if (idx >= 0) selectedIndex = idx;
+      window.__restoreSelectedCli = null;
+    }
+    applyFilterAndSort();
+    await persistRows();
+    if (statusMsg) loadStatus.textContent = statusMsg;
+  }
+
+  function readFileAsText(file) {
+    return new Promise((resolve, reject) => {
+      const fr = new FileReader();
+      fr.onload = () => resolve(String(fr.result || ''));
+      fr.onerror = () => reject(fr.error);
+      fr.readAsText(file);
+    });
+  }
+
+  async function handleLoadCsvs() {
+    try {
+      loadStatus.textContent = 'Reading CSV files…';
+      const dltFile = document.getElementById('dltFile').files[0];
+      const consentFile = document.getElementById('consentFile').files[0];
+      const cdrFile = document.getElementById('cdrFile').files[0];
+      const [dltText, consentText, cdrText] = await Promise.all([
+        dltFile ? readFileAsText(dltFile) : Promise.resolve(''),
+        consentFile ? readFileAsText(consentFile) : Promise.resolve(''),
+        cdrFile ? readFileAsText(cdrFile) : Promise.resolve('')
+      ]);
+      const dltRows = dltText ? parseCSV(dltText) : [];
+      const consentRows = consentText ? parseCSV(consentText) : [];
+      const cdrRows = cdrText ? parseCSV(cdrText) : [];
+      if (!dltRows.length && !consentRows.length && !cdrRows.length) {
+        loadStatus.textContent = 'No CSV data loaded. Select files or use the sample loader.';
+        return;
+      }
+      const records = scanAndAggregate(dltRows, consentRows, cdrRows);
+      await setRows(records, 'Loaded CSVs: ' + dltRows.length + ' DLT, ' + consentRows.length + ' consent, ' + cdrRows.length + ' CDR rows → ' + records.length + ' CLIs.');
+    } catch (e) {
+      loadStatus.textContent = 'Failed to load CSVs: ' + (e && e.message ? e.message : String(e));
+    }
+  }
+
+  function synthesizeSample(count) {
+    const target = count || 10000; // ~10k rows
+    const cliCount = 250;
+    const clis = [];
+    for (let i = 0; i < cliCount; i++) {
+      const num = 1600000000 + i;
+      clis.push('+91' + String(num));
+    }
+    const dltRows = clis.map((cli, i) => ({
+      declaration_id: 'DLT-' + i,
+      cli_e164: cli,
+      operator: 'JIO',
+      series: i % 5 === 0 ? '140_PROMO' : '160_SERVICE_BFSI',
+      status: i % 17 === 0 ? '0' : '1',
+      dlt_status: i % 17 === 0 ? 'SUSPENDED' : 'ACTIVE',
+      valid_from: 1700000000,
+      valid_to: 1900000000
+    }));
+    const consentRows = [];
+    for (let i = 0; i < 500; i++) {
+      consentRows.push({
+        consent_id: 'CNS-' + i,
+        recipient_hmac: 'rh_' + i,
+        consent_flag: '1',
+        inquiry_verified_ts: 1762356600,
+        inquiry_artifact_sha256: 'artifact_' + i
+      });
+    }
+    const cdrRows = [];
+    const baseTs = 1762960000;
+    for (let i = 0; i < target; i++) {
+      const cli = clis[i % clis.length];
+      const intentPool = ['INQUIRY_FOLLOWUP','SERVICE','TRANSACTIONAL','PROMOTIONAL'];
+      const intent = intentPool[i % intentPool.length];
+      const complainant = (i % 97 === 0) ? ('cmp_' + (i % 40)) : '';
+      cdrRows.push({
+        event_id: 'cdr_' + i,
+        cli_e164: cli,
+        recipient_hmac: 'rh_' + (i % 500),
+        call_intent: intent,
+        call_ts: baseTs + (i % 86400),
+        duration_sec: (i % 7 === 0) ? 0 : (30 + (i % 180)),
+        complaint_flag: complainant ? 1 : 0,
+        complainant_hmac: complainant || '',
+        operator_ml_flag: (i % 211 === 0) ? 1 : 0
+      });
+    }
+    return { dltRows, consentRows, cdrRows };
+  }
+  async function handleSample() {
+    loadStatus.textContent = 'Synthesizing Mahindra-scale sample (~10k rows)…';
+    // yield to UI
+    await new Promise(r => setTimeout(r, 10));
+    const { dltRows, consentRows, cdrRows } = synthesizeSample(10000);
+    const records = scanAndAggregate(dltRows, consentRows, cdrRows);
+    await setRows(records, 'Loaded synthetic sample: ' + cdrRows.length + ' CDR rows across ' + dltRows.length + ' CLIs → ' + records.length + ' aggregated CLI records.');
+  }
+
+  // --- Events / shortcuts ---
+  function isTypingTarget(el) {
+    if (!el) return false;
+    const tag = el.tagName;
+    if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return true;
+    if (el.isContentEditable) return true;
+    return false;
+  }
+  document.addEventListener('keydown', (e) => {
+    if (isTypingTarget(document.activeElement)) return;
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
+    const k = e.key;
+    if (k === 'j') { e.preventDefault(); selectByDelta(1); }
+    else if (k === 'k') { e.preventDefault(); selectByDelta(-1); }
+    else if (k === 'f') { e.preventDefault(); toggleFlag(); }
+    else if (k === 'e') { e.preventDefault(); openDrawer(!drawer.classList.contains('open')); }
+    else if (k === '/') { e.preventDefault(); searchBox.focus(); searchBox.select(); }
+  });
+
+  // header sort
+  document.querySelectorAll('th[data-key]').forEach(th => {
+    const handler = () => {
+      const key = th.getAttribute('data-key');
+      if (sortKey === key) sortDir = (sortDir === 'asc') ? 'desc' : 'asc';
+      else { sortKey = key; sortDir = (key === 'cli') ? 'asc' : 'desc'; }
+      applyFilterAndSort();
+    };
+    th.addEventListener('click', handler);
+    th.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); handler(); } });
+  });
+
+  searchBox.addEventListener('input', () => { selectedIndex = 0; applyFilterAndSort(); });
+  document.getElementById('loadCsvBtn').addEventListener('click', handleLoadCsvs);
+  document.getElementById('sampleBtn').addEventListener('click', handleSample);
+  document.getElementById('closeDrawerBtn').addEventListener('click', () => openDrawer(false));
+  document.getElementById('exportJsonlBtn').addEventListener('click', exportJsonl);
+  document.getElementById('clearBtn').addEventListener('click', async () => {
+    rows = []; filteredIndices = []; selectedIndex = -1;
+    await idbClear();
+    localStorage.removeItem(PREFS_KEY);
+    renderTable();
+    openDrawer(false);
+    loadStatus.textContent = 'Cleared stored data (IndexedDB + prefs).';
+  });
+
+  // --- Init ---
+  async function init() {
+    loadPrefs();
+    try {
+      db = await openDb();
+      const stored = await idbGetAll();
+      if (stored && stored.length) {
+        rows = stored;
+        // restore selection by CLI
+        if (window.__restoreSelectedCli) {
+          // handled in set-like flow below
+        }
+        applyFilterAndSort();
+        // adjust selectedIndex to restored cli
+        if (window.__restoreSelectedCli) {
+          const idx = filteredIndices.findIndex(i => rows[i].cli === window.__restoreSelectedCli);
+          if (idx >= 0) selectedIndex = idx;
+          window.__restoreSelectedCli = null;
+          renderTable();
+        }
+        loadStatus.textContent = 'Restored ' + rows.length + ' CLI records from IndexedDB (' + DB_NAME + ').';
+      } else {
+        renderTable();
+        loadStatus.textContent = 'Ready. Load CSVs or generate a synthetic sample.';
+      }
+    } catch (e) {
+      console.warn('Init failed', e);
+      renderTable();
+      loadStatus.textContent = 'Storage init warning: ' + (e && e.message ? e.message : String(e));
+    }
+  }
+
+  // Expose a tiny debug surface for manual/headless checks (no external deps)
+  window.__traiAudit = {
+    DB_NAME, PREFS_KEY, RULES, R4_WINDOW_SEC, R6_WINDOW_SEC,
+    terminationExposureInr, computeRiskScore, synthesizeSample, scanAndAggregate,
+    get rows() { return rows; }, get selectedIndex() { return selectedIndex; }
+  };
+
+  init();
+})();
+</script>
+</body>
+</html>
