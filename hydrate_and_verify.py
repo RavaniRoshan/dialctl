@@ -2,6 +2,7 @@ import csv
 import hashlib
 import hmac
 import json
+import math
 import sqlite3
 from datetime import datetime, timedelta, timezone
 
@@ -80,6 +81,19 @@ def init_db(conn: sqlite3.Connection) -> None:
             complaint_flag INTEGER,
             complainant_hmac TEXT,
             operator_ml_flag INTEGER
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE cli_registry (
+            cli_e164 TEXT PRIMARY KEY,
+            status TEXT,
+            a2p_voice_declared INTEGER,
+            compliant_attestation_count INTEGER,
+            undeclared_call_count_10d INTEGER,
+            unique_complaints_10d INTEGER,
+            operator_ml_flags_10d INTEGER
         )
         """
     )
@@ -362,4 +376,107 @@ def export_attestations_jsonl(records: list[dict], out_path: str) -> None:
     with open(out_path, "w", encoding="utf-8") as f:
         for record in records:
             f.write(json.dumps(record, sort_keys=True, separators=(",", ":")) + "\n")
+
+
+def compute_cli_risk_score(
+    undeclared_calls,
+    unique_complaints_10d,
+    operator_ml_flags_10d,
+    expired_inquiry_calls_10d,
+) -> float:
+    complaint_term = 62.5 * (1.4 ** unique_complaints_10d - 1)
+    total = (
+        complaint_term
+        + 15 * undeclared_calls
+        + 10 * operator_ml_flags_10d
+        + 5 * expired_inquiry_calls_10d
+    )
+    return min(100.0, round(total, 2))
+
+
+def compute_termination_exposure_inr(durations_sec) -> float:
+    return round(sum(math.ceil(d / 60) * 0.05 for d in durations_sec if d > 0), 2)
+
+
+def select_healthy_clis(conn: sqlite3.Connection, now_ts) -> list[dict]:
+    cur = conn.execute(
+        """
+        SELECT cli_e164, status, a2p_voice_declared, compliant_attestation_count,
+               undeclared_call_count_10d, unique_complaints_10d, operator_ml_flags_10d
+        FROM cli_registry
+        WHERE status = 'ACTIVE'
+          AND a2p_voice_declared = 1
+          AND compliant_attestation_count > 0
+          AND undeclared_call_count_10d = 0
+          AND unique_complaints_10d < 2
+          AND operator_ml_flags_10d = 0
+        """
+    )
+    cols = [d[0] for d in cur.description]
+    return [dict(zip(cols, row)) for row in cur.fetchall()]
+
+
+def run_smoke_test(limit, out_path) -> dict:
+    conn = sqlite3.connect(":memory:")
+    init_db(conn)
+
+    cli_e164 = "+911600412900"
+    conn.execute(
+        "INSERT INTO dlt_declarations VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            "DLT-SMOKE-01",
+            cli_e164,
+            "JIO",
+            "160_SERVICE_BFSI",
+            1,
+            "ACTIVE",
+            1758153600,
+            1789689600,
+        ),
+    )
+
+    recipient_hmac = hmac_phone("+919876543210", "smoke-secret")
+    inquiry_verified_ts = 1762356600
+    conn.execute(
+        "INSERT INTO consent_ledger VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (
+            "CNS-SMOKE-1",
+            recipient_hmac,
+            0,
+            None,
+            inquiry_verified_ts,
+            "artifact_sha256_smoke",
+            None,
+        ),
+    )
+
+    call_ts = 1762936200  # 2026-11-12 14:00:00 IST, inquiry age 579600s
+    records = []
+    prev_hash = GENESIS_HASH
+    correct = 0
+    for i in range(limit):
+        seq_no = i + 1
+        call_sid = f"smoke_{i}"
+        record = evaluate_pre_dial(
+            conn,
+            call_sid,
+            cli_e164,
+            recipient_hmac,
+            "INQUIRY_FOLLOWUP",
+            call_ts,
+            seq_no,
+            prev_hash,
+        )
+        expected_decision = "ALLOW"
+        if record["decision"] == expected_decision and record["failed_rules"] == []:
+            correct += 1
+        records.append(record)
+        prev_hash = record["attestation_hash"]
+
+    export_attestations_jsonl(records, out_path)
+
+    total = limit
+    precision = (correct / total) if total else 0.0
+    assert precision == 1.0
+    return {"rows_evaluated": limit, "rule_precision": precision}
 

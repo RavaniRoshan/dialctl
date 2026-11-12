@@ -27,7 +27,10 @@ class TestHydration(unittest.TestCase):
                 "SELECT name FROM sqlite_master WHERE type='table'"
             ).fetchall()
         }
-        self.assertEqual(tables, {"dlt_declarations", "consent_ledger", "cdr_events"})
+        self.assertEqual(
+            tables,
+            {"dlt_declarations", "consent_ledger", "cdr_events", "cli_registry"},
+        )
 
 
 if __name__ == "__main__":

@@ -81,7 +81,21 @@ Python 3.12 standard-library `sqlite3` module.
 | 8 | `complainant_hmac` | TEXT | HMAC of complainant; NULL when not a complaint |
 | 9 | `operator_ml_flag` | INTEGER | `1` when operator ML raised a flag |
 
-### 3.4 Indexes
+### 3.4 `cli_registry` — 7 columns
+
+CLI-registry view used by `select_healthy_clis` / healthy routing (SPEC §5.3).
+
+| # | Column | Type | Notes |
+|---|--------|------|-------|
+| 1 | `cli_e164` | TEXT | PRIMARY KEY, calling line identity |
+| 2 | `status` | TEXT | e.g. `ACTIVE` |
+| 3 | `a2p_voice_declared` | INTEGER | `1` when declared for A2P voice |
+| 4 | `compliant_attestation_count` | INTEGER | count of compliant attestations |
+| 5 | `undeclared_call_count_10d` | INTEGER | undeclared calls in rolling 10d |
+| 6 | `unique_complaints_10d` | INTEGER | unique complaints in rolling 10d |
+| 7 | `operator_ml_flags_10d` | INTEGER | operator ML flags in rolling 10d |
+
+### 3.5 Indexes
 
 | Index | Columns |
 |-------|---------|
