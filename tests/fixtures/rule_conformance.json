@@ -19,11 +19,11 @@
       "distinct": 0,
       "ml_flags": 0
     },
-    "expect_failed_contains": [
+    "note": "PROMOTIONAL on a 160 CLI fails R2",
+    "expect_failed": [
       "R2_140_160_SERIES",
       "R3_ROBO_DND_MODE"
-    ],
-    "note": "PROMOTIONAL on a 160 CLI fails R2"
+    ]
   },
   {
     "name": "unknown intent fails closed",
@@ -45,11 +45,11 @@
       "distinct": 0,
       "ml_flags": 0
     },
-    "expect_failed_contains": [
+    "note": "unknown intent must fail R2 in BOTH runtimes (this is the drift the fix targets)",
+    "expect_failed": [
       "R2_140_160_SERIES",
       "R3_ROBO_DND_MODE"
-    ],
-    "note": "unknown intent must fail R2 in BOTH runtimes (this is the drift the fix targets)"
+    ]
   },
   {
     "name": "inquiry follow-up inside window",
@@ -111,7 +111,7 @@
       "distinct": 0,
       "ml_flags": 0
     },
-    "expect_failed_contains": [
+    "expect_failed": [
       "R3_ROBO_DND_MODE"
     ]
   },
@@ -144,7 +144,7 @@
       "distinct": 0,
       "ml_flags": 0
     },
-    "expect_failed_contains": [
+    "expect_failed": [
       "R3_ROBO_DND_MODE"
     ]
   },
@@ -209,9 +209,10 @@
       "distinct": 3,
       "ml_flags": 0
     },
-    "expect_failed_contains": [
+    "expect_failed": [
       "R6_10DAY_CLUSTER"
-    ]
+    ],
+    "r6": true
   },
   {
     "name": "two complainants with ML flag trip R6",
@@ -242,9 +243,10 @@
       "distinct": 2,
       "ml_flags": 1
     },
-    "expect_failed_contains": [
+    "expect_failed": [
       "R6_10DAY_CLUSTER"
-    ]
+    ],
+    "r6": true
   },
   {
     "name": "series 140 does not license a 160 CLI for promo",
@@ -266,10 +268,10 @@
       "distinct": 0,
       "ml_flags": 0
     },
-    "expect_failed_contains": [
+    "note": "the CLI prefix governs R2, not the declared series",
+    "expect_failed": [
       "R2_140_160_SERIES",
       "R3_ROBO_DND_MODE"
-    ],
-    "note": "the CLI prefix governs R2, not the declared series"
+    ]
   }
 ]

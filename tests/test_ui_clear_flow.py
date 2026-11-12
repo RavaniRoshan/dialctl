@@ -196,11 +196,66 @@ class TestBrowserRuleConformance(unittest.TestCase):
         for case in self.cases:
             with self.subTest(case=case["name"]):
                 r2_ok, r3_trips = self._eval_case(case)
-                if "R2_140_160_SERIES" in case.get("expect_failed", []) + case.get("expect_failed_contains", []):
+                expected = set(case.get("expect_failed", []))
+                # R2/R3 are seam-equivalent between the runtimes, so the
+                # browser helper must match the fixture exactly.
+                if "R2_140_160_SERIES" in expected:
                     self.assertFalse(r2_ok, f"{case['name']}: R2 should fail")
                 else:
                     self.assertTrue(r2_ok, f"{case['name']}: R2 should pass")
-                if "R3_ROBO_DND_MODE" in case.get("expect_failed", []) + case.get("expect_failed_contains", []):
+                if "R3_ROBO_DND_MODE" in expected:
                     self.assertTrue(r3_trips, f"{case['name']}: R3 should trip")
                 else:
                     self.assertFalse(r3_trips, f"{case['name']}: R3 should not trip")
+
+    def test_browser_r6_matches_the_fixture_via_scan_aggregate(self):
+        """R6 is the one rule whose browser window is per-CLI (a drift scan over
+        [maxTs-864000, maxTs]) rather than per-call, so it is checked through
+        scanAndAggregate with a single CLI — which makes the two views
+        equivalent for one CLI and one complaint set."""
+        r6_cases = [c for c in self.cases if c.get("r6")]
+        self.assertTrue(r6_cases, "fixture must carry at least one r6 case")
+        for case in r6_cases:
+            with self.subTest(case=case["name"]):
+                trips = self._run_r6_scan(case)
+                should_trip = "R6_10DAY_CLUSTER" in set(case.get("expect_failed", []))
+                self.assertEqual(trips, should_trip, f"{case['name']}: R6 mismatch")
+
+    def _run_r6_scan(self, case):
+        helpers = "\n".join(
+            _extract_function(self.text, h)
+            for h in ("istSecOfDay", "computeRiskScore", "terminationExposureInr",
+                      "sortKeysDeep", "r2Passes", "r3Trips")
+        )
+        consts = (
+            "const R4_WINDOW_SEC = 604800;"
+            "const R6_WINDOW_SEC = 864000;"
+            "const RULES = {R1_CLI_DECLARED:'',R2_140_160_SERIES:'',R3_ROBO_DND_MODE:'',"
+            "R4_7DAY_INQUIRY:'',R5_CALL_WINDOW:'',R6_10DAY_CLUSTER:''};"
+            "const RULE_IDS = Object.keys(RULES);"
+        )
+        fn = _extract_function(self.text, "scanAndAggregate")
+        cli = case["cli_e164"]
+        cdr = []
+        # one complaint event per distinct complainant, plus one ML-flagged event
+        for i in range(case["complaints_10d"]["distinct"]):
+            cdr.append({
+                "cli_e164": cli, "recipient_hmac": "r", "call_intent": case["call_intent"],
+                "call_ts": case["call_ts"] - 1000, "duration_sec": 30,
+                "complaint_flag": 1, "complainant_hmac": f"c{i}", "operator_ml_flag": 0,
+            })
+        if case["complaints_10d"]["ml_flags"]:
+            cdr.append({
+                "cli_e164": cli, "recipient_hmac": "r", "call_intent": case["call_intent"],
+                "call_ts": case["call_ts"] - 2000, "duration_sec": 30,
+                "complaint_flag": 1, "complainant_hmac": "mlsrc", "operator_ml_flag": 1,
+            })
+        script = (
+            consts + "\n" + helpers + "\n" + fn + "\n"
+            "const out = scanAndAggregate("
+            + json.dumps([case["declarations"][0] if case["declarations"] else None])
+            + ", [], " + json.dumps(cdr) + ");\n"
+            "const r = out.find(x => x.cli === " + json.dumps(cli) + ");\n"
+            "process.stdout.write(String(!!(r && r.r6Trip)));\n"
+        )
+        return _run_node(script).strip() == "true"

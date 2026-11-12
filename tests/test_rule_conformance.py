@@ -21,11 +21,13 @@ class TestRuleConformance(unittest.TestCase):
         for case in load_cases():
             with self.subTest(case=case["name"]):
                 decision = evaluate_rules(case)
-                failed = set(decision["failed_rules"])
-                for rule in case.get("expect_failed", []):
-                    self.assertIn(rule, failed, f"{case['name']}: expected {rule}")
-                for rule in case.get("expect_failed_contains", []):
-                    self.assertIn(rule, failed, f"{case['name']}: expected {rule}")
+                self.assertEqual(
+                    set(decision["failed_rules"]),
+                    set(case["expect_failed"]),
+                    f"{case['name']}: unexpected failed_rules",
+                )
+                expected_decision = "ALLOW" if not case["expect_failed"] else "BLOCK"
+                self.assertEqual(decision["decision"], expected_decision)
 
 
 if __name__ == "__main__":
