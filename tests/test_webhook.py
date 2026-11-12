@@ -8,6 +8,9 @@ from server import ComplianceGateState, handle_pre_dial_payload
 
 
 class TestWebhook(unittest.TestCase):
+    def setUp(self):
+        self.state = ComplianceGateState.create_with_sample_fixture(secret_key="test-secret")
+
     def test_pre_dial_latency_under_5ms_and_blocks_undeclared(self):
         state = ComplianceGateState.create_with_sample_fixture(secret_key="test-secret")
         payload = {
@@ -71,6 +74,16 @@ class TestWebhook(unittest.TestCase):
         self.assertEqual(sorted(seq_nos), list(range(1, n + 1)))
         records_in_seq_order = sorted(records, key=lambda r: r["seq_no"])
         self.assertEqual(verify_hash_chain(records_in_seq_order), (True, "OK"))
+
+
+    def test_http_400_preserves_seq_no_and_chain_state(self) -> None:
+        initial_seq = self.state.seq_no
+        initial_hash = self.state.last_attestation_hash
+        status, body = handle_pre_dial_payload(self.state, {"call_sid": "missing_fields_only"})
+        self.assertEqual(status, 400)
+        self.assertIn("error", body)
+        self.assertEqual(self.state.seq_no, initial_seq)
+        self.assertEqual(self.state.last_attestation_hash, initial_hash)
 
 
 if __name__ == "__main__":

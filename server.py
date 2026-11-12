@@ -65,7 +65,30 @@ class ComplianceGateState:
         return cls(conn=conn, secret_key=secret_key)
 
 
+REQUIRED_PAYLOAD_FIELDS = ("call_sid", "cli_e164", "customer_phone", "call_intent", "call_ts")
+_STRING_PAYLOAD_FIELDS = ("call_sid", "cli_e164", "customer_phone", "call_intent")
+
+
+def validate_payload(payload) -> str | None:
+    """Return an error string when the payload is invalid, else None."""
+    if not isinstance(payload, dict):
+        return "non-object payload"
+    missing = [k for k in REQUIRED_PAYLOAD_FIELDS if k not in payload]
+    if missing:
+        return f"missing required fields: {', '.join(missing)}"
+    bad = [k for k in _STRING_PAYLOAD_FIELDS if not isinstance(payload[k], str)]
+    if not isinstance(payload["call_ts"], int) or isinstance(payload["call_ts"], bool):
+        bad.append("call_ts")
+    if bad:
+        return f"non-conforming required fields: {', '.join(bad)}"
+    return None
+
+
 def handle_pre_dial_payload(state, payload):
+    error = validate_payload(payload)
+    if error is not None:
+        return (400, {"error": error})
+
     call_sid = payload["call_sid"]
     cli_e164 = payload["cli_e164"]
     customer_phone = payload["customer_phone"]
@@ -116,23 +139,6 @@ class _ComplianceHandler(BaseHTTPRequestHandler):
                 payload = json.loads(raw.decode("utf-8"))
             except (json.JSONDecodeError, UnicodeDecodeError):
                 self._send_json(400, {"error": "invalid JSON"})
-                return
-            if not isinstance(payload, dict):
-                self._send_json(400, {"error": "non-object JSON"})
-                return
-            required = ("call_sid", "cli_e164", "customer_phone", "call_intent", "call_ts")
-            missing = [k for k in required if k not in payload]
-            if missing:
-                self._send_json(400, {"error": f"missing required fields: {', '.join(missing)}"})
-                return
-            non_conforming = []
-            for k in ("call_sid", "cli_e164", "customer_phone", "call_intent"):
-                if not isinstance(payload[k], str):
-                    non_conforming.append(k)
-            if not isinstance(payload["call_ts"], int) or isinstance(payload["call_ts"], bool):
-                non_conforming.append("call_ts")
-            if non_conforming:
-                self._send_json(400, {"error": f"non-conforming required fields: {', '.join(non_conforming)}"})
                 return
             status, record = handle_pre_dial_payload(self.state, payload)
             self._send_json(status, record)

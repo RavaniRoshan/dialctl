@@ -137,6 +137,14 @@ def _hash_phone_or_none(value, secret_key):
     return hmac_phone(value, secret_key)
 
 
+def _pick(row, *names):
+    """Return the first present value among candidate header names."""
+    for name in names:
+        if name in row:
+            return row[name]
+    return None
+
+
 def hydrate_csv_tables(
     conn: sqlite3.Connection,
     dlt_csv: str,
@@ -149,42 +157,53 @@ def hydrate_csv_tables(
     with open(dlt_csv, newline="", encoding="utf-8") as f:
         rows = list(csv.DictReader(f))
     for row in rows:
+        declaration_id = _pick(row, "declaration_id")
+        cli = _normalize_e164(_pick(row, "cli_e164"))
+        operator = _pick(row, "operator", "operator_name")
+        series = _pick(row, "series", "series_type")
+        dlt_status = _pick(row, "dlt_status", "status")
+        a2p_declared = _opt_int(_pick(row, "a2p_voice_declared"))
+        if a2p_declared is None:
+            a2p_declared = _opt_int(_pick(row, "status"))
         conn.execute(
             "INSERT INTO dlt_declarations VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             (
-                row["declaration_id"],
-                _normalize_e164(row["cli_e164"]),
-                row["operator"],
-                row["series"],
-                _opt_int(row["status"]),
-                row["dlt_status"],
-                _opt_int(row["valid_from"]),
-                _opt_int(row["valid_to"]),
+                declaration_id,
+                cli,
+                operator,
+                series,
+                a2p_declared,
+                dlt_status,
+                _opt_int(_pick(row, "valid_from", "valid_from_ts")),
+                _opt_int(_pick(row, "valid_to", "valid_to_ts")),
             ),
         )
-    counts["dlt_declarations"] = len(rows)
+    counts["dlt"] = len(rows)
 
     with open(consent_csv, newline="", encoding="utf-8") as f:
         rows = list(csv.DictReader(f))
     for row in rows:
+        recipient_hmac = _hash_phone_or_none(
+            _pick(row, "recipient_phone", "recipient_hmac"), secret_key
+        )
         conn.execute(
             "INSERT INTO consent_ledger VALUES (?, ?, ?, ?, ?, ?, ?)",
             (
-                row["consent_id"],
-                hmac_phone(row["recipient_phone"], secret_key),
-                _opt_int(row["consent_flag"]),
-                _opt_int(row.get("withdrawal_ts")),
+                _pick(row, "consent_id"),
+                recipient_hmac,
+                _opt_int(_pick(row, "dnd_robo_block", "consent_flag")),
+                _opt_int(_pick(row, "withdrawal_ts", "explicit_consent_ts")),
                 _opt_int(row.get("inquiry_verified_ts")),
                 _opt_text(row.get("inquiry_artifact_sha256")),
                 _opt_int(row.get("revoked_ts")),
             ),
         )
-    counts["consent_ledger"] = len(rows)
+    counts["consent"] = len(rows)
 
     with open(cdr_csv, newline="", encoding="utf-8") as f:
         rows = list(csv.DictReader(f))
     for row in rows:
-        call_ts_raw = row["call_ts"].strip()
+        call_ts_raw = _pick(row, "call_ts").strip()
         if call_ts_raw.lstrip("-").isdigit():
             call_ts = int(call_ts_raw)
         else:
@@ -192,18 +211,18 @@ def hydrate_csv_tables(
         conn.execute(
             "INSERT INTO cdr_events VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
-                row["event_id"],
-                _normalize_e164(row["cli_e164"]),
-                hmac_phone(row["recipient_phone"], secret_key),
-                row["call_intent"],
+                _pick(row, "event_id", "call_sid"),
+                _normalize_e164(_pick(row, "cli_e164")),
+                _hash_phone_or_none(_pick(row, "recipient_phone", "recipient_hmac"), secret_key),
+                _pick(row, "call_intent"),
                 call_ts,
-                _opt_int(row["duration_sec"]),
-                _opt_int(row["complaint_flag"]),
+                _opt_int(row.get("duration_sec")),
+                _opt_int(_pick(row, "complaint_flag", "ucc_complaint_filed")),
                 _hash_phone_or_none(row.get("complainant_phone"), secret_key),
-                _opt_int(row["operator_ml_flag"]),
+                _opt_int(row.get("operator_ml_flag")),
             ),
         )
-    counts["cdr_events"] = len(rows)
+    counts["cdr"] = len(rows)
 
     conn.commit()
     return counts
