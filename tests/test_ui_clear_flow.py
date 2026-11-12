@@ -87,6 +87,8 @@ class TestBrowserScanR3(unittest.TestCase):
             "computeRiskScore",
             "terminationExposureInr",
             "sortKeysDeep",
+            "r2Passes",
+            "r3Trips",
         ]
         self.fn = "\n".join(consts)
         self.fn += "\n" + "\n".join(_extract_function(self.text, h) for h in helpers)
@@ -131,8 +133,10 @@ class TestBrowserScanR3(unittest.TestCase):
     def test_revoked_ts_trips_r3(self):
         self.assertTrue(self._run({"recipient_hmac": "h1", "dnd_robo_block": 0, "revoked_ts": "1762000000"}))
 
-    def test_withdrawal_ts_trips_r3(self):
-        self.assertTrue(self._run({"recipient_hmac": "h1", "dnd_robo_block": 0, "withdrawal_ts": "1762000000"}))
+    def test_withdrawal_ts_alone_does_not_trip_r3(self):
+        # The Python engine treats withdrawal separately from revocation: a
+        # withdrawal_ts on its own must not trip R3. The browser now matches.
+        self.assertFalse(self._run({"recipient_hmac": "h1", "dnd_robo_block": 0, "withdrawal_ts": "1762000000"}))
 
     def test_clean_consent_allows(self):
         self.assertFalse(
@@ -144,9 +148,59 @@ class TestBrowserScanR3(unittest.TestCase):
         self.assertTrue(self._run(None))
         self.assertTrue(self._run({"recipient_hmac": "h1", "dnd_robo_block": 1, "revoked_ts": ""}))
         self.assertTrue(self._run({"recipient_hmac": "h1", "dnd_robo_block": 0, "revoked_ts": "1762000000"}))
-        self.assertTrue(self._run({"recipient_hmac": "h1", "dnd_robo_block": 0, "withdrawal_ts": "1762000000"}))
+        self.assertFalse(self._run({"recipient_hmac": "h1", "dnd_robo_block": 0, "withdrawal_ts": "1762000000"}))
         self.assertFalse(self._run({"recipient_hmac": "h1", "dnd_robo_block": 0, "revoked_ts": ""}))
 
 
 if __name__ == "__main__":
     unittest.main()
+
+class TestBrowserRuleConformance(unittest.TestCase):
+    """The browser rule helpers must agree with the shared conformance fixture,
+    the same file the Python engine runs (tests/test_rule_conformance.py). A
+    case added to the fixture must pass in both runtimes, or it is drift."""
+
+    def setUp(self):
+        self.text = HTML.read_text(encoding="utf-8")
+        self.helpers = "\n".join(
+            _extract_function(self.text, name) for name in ("r2Passes", "r3Trips")
+        )
+        self.cases = json.loads(
+            (Path(__file__).parent / "fixtures" / "rule_conformance.json").read_text(
+                encoding="utf-8"
+            )
+        )
+
+    def _eval_case(self, case):
+        # r2: needs cli, dlt, intent
+        r2_ok = self._run_js(
+            self.helpers
+            + "\nconst cli = " + json.dumps(case["cli_e164"]) + ";"
+            + "const dlt = " + json.dumps(case["declarations"][0] if case["declarations"] else None) + ";"
+            + "const intent = " + json.dumps(case["call_intent"].upper()) + ";"
+            + "process.stdout.write(String(r2Passes(cli, dlt, intent)));"
+        )
+        # r3: needs the first consent (or null)
+        consent = case["consents"][0] if case["consents"] else None
+        r3_trips = self._run_js(
+            self.helpers
+            + "\nconst consent = " + json.dumps(consent) + ";"
+            + "process.stdout.write(String(r3Trips(consent)));"
+        )
+        return r2_ok.strip() == "true", r3_trips.strip() == "true"
+
+    def _run_js(self, script):
+        return _run_node(script)
+
+    def test_browser_r2_and_r3_match_the_conformance_fixture(self):
+        for case in self.cases:
+            with self.subTest(case=case["name"]):
+                r2_ok, r3_trips = self._eval_case(case)
+                if "R2_140_160_SERIES" in case.get("expect_failed", []) + case.get("expect_failed_contains", []):
+                    self.assertFalse(r2_ok, f"{case['name']}: R2 should fail")
+                else:
+                    self.assertTrue(r2_ok, f"{case['name']}: R2 should pass")
+                if "R3_ROBO_DND_MODE" in case.get("expect_failed", []) + case.get("expect_failed_contains", []):
+                    self.assertTrue(r3_trips, f"{case['name']}: R3 should trip")
+                else:
+                    self.assertFalse(r3_trips, f"{case['name']}: R3 should not trip")
